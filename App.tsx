@@ -2,12 +2,12 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
 import ShogiBoard from './components/ShogiBoard';
 import Komadai from './components/Komadai';
-import Chat from './components/Chat'; // ★Chatをインポート
+import Chat from './components/Chat';
 import { BoardState, Coordinates, Hand, Move, PieceType, Player } from './types';
-import { createInitialBoard, isValidMove, promotePiece, applyMove, exportKIF } from './utils/shogiUtils';
-import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE, PIECE_KANJI } from './constants';
+import { createInitialBoard, isValidMove, applyMove, exportKIF } from './utils/shogiUtils';
+import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE } from './constants';
 
-// --- 定数・型定義 ---
+// --- 定数 ---
 const EMPTY_HAND = {
   [PieceType.Pawn]: 0, [PieceType.Lance]: 0, [PieceType.Knight]: 0, [PieceType.Silver]: 0,
   [PieceType.Gold]: 0, [PieceType.Bishop]: 0, [PieceType.Rook]: 0, [PieceType.King]: 0,
@@ -15,11 +15,89 @@ const EMPTY_HAND = {
   [PieceType.PromotedSilver]: 0, [PieceType.Horse]: 0, [PieceType.Dragon]: 0,
 };
 
+// --- Socket接続 ---
 const socket: Socket = io("http://localhost:3001", {
   transports: ['websocket', 'polling'],
   autoConnect: false,
 });
 
+// --- 音声合成 (Web Audio API) ---
+const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+const bufferSize = audioCtx.sampleRate * 2.0;
+const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+const output = noiseBuffer.getChannelData(0);
+for (let i = 0; i < bufferSize; i++) {
+  output[i] = Math.random() * 2 - 1;
+}
+
+// ★修正版: 「ピシッ！」と鋭い駒音
+const playSound = (type: 'move' | 'alert' | 'timeout') => {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const now = audioCtx.currentTime;
+
+  if (type === 'move') {
+    // --- 駒音 ---
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    // ★変更: 8000Hzまで開放（高音成分を強調）
+    filter.frequency.setValueAtTime(8000, now); 
+
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(1.0, now);
+    // ★変更: 0.015秒で減衰（極限まで歯切れよく）
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.015); 
+
+    const osc = audioCtx.createOscillator();
+    osc.type = 'triangle';
+    // ★変更: 600Hz（硬い響きを追加）
+    osc.frequency.setValueAtTime(600, now); 
+    const oscGain = audioCtx.createGain();
+    oscGain.gain.setValueAtTime(0.15, now); // 響きは少し控えめに
+    oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+    
+    osc.connect(oscGain);
+    oscGain.connect(audioCtx.destination);
+
+    noise.start(now);
+    noise.stop(now + 0.1);
+    osc.start(now);
+    osc.stop(now + 0.1);
+
+  } else if (type === 'alert') {
+    // 秒読み (変更なし)
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.frequency.setValueAtTime(1000, now);
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.linearRampToValueAtTime(0.01, now + 0.1);
+    osc.start(now);
+    osc.stop(now + 0.1);
+
+  } else if (type === 'timeout') {
+    // 時間切れ (変更なし)
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.frequency.setValueAtTime(400, now);
+    osc.frequency.linearRampToValueAtTime(100, now + 1.0);
+    gain.gain.setValueAtTime(0.5, now);
+    gain.gain.linearRampToValueAtTime(0.01, now + 1.0);
+    osc.start(now);
+    osc.stop(now + 1.0);
+  }
+};
+
+// --- 型定義 ---
 type GameStatus = 'waiting' | 'playing' | 'finished' | 'analysis';
 type Role = 'sente' | 'gote' | 'audience';
 
@@ -35,47 +113,44 @@ const formatTime = (seconds: number) => {
 };
 
 const App: React.FC = () => {
-  // --- Connection State ---
+  // --- State ---
   const [roomId, setRoomId] = useState<string>("");
+  const [userId, setUserId] = useState<string>("");
   const [isAnalysisRoom, setIsAnalysisRoom] = useState(false);
   const [joined, setJoined] = useState(false);
   const [myRole, setMyRole] = useState<Role>('audience');
   const [readyStatus, setReadyStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [rematchRequests, setRematchRequests] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
-
-  // --- View State ---
   const [isFlipped, setIsFlipped] = useState(false);
-
-  // --- Game Data ---
   const [gameStatus, setGameStatus] = useState<GameStatus>('waiting');
   const [winner, setWinner] = useState<Player | null>(null);
   const [initialBoard] = useState<BoardState>(createInitialBoard());
-  
-  // --- Timer Data ---
   const [settings, setSettings] = useState<TimeSettings>({ initial: 600, byoyomi: 30 });
   const [times, setTimes] = useState<{sente: number, gote: number}>({sente: 600, gote: 600});
   const [byoyomi, setByoyomi] = useState<{sente: number, gote: number}>({sente: 30, gote: 30});
-
-  // --- Chat Data ---
   const [chatMessages, setChatMessages] = useState<any[]>([]);
-
-  // Display Data
   const [displayBoard, setDisplayBoard] = useState<BoardState>(createInitialBoard());
   const [displayHands, setDisplayHands] = useState<{ sente: Hand; gote: Hand }>({
     sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND },
   });
   const [displayTurn, setDisplayTurn] = useState<Player>('sente'); 
   const [displayLastMove, setDisplayLastMove] = useState<{ from: Coordinates | 'hand'; to: Coordinates } | null>(null);
-
   const [history, setHistory] = useState<Move[]>([]);
-  
-  // --- UI State ---
   const [viewIndex, setViewIndex] = useState<number>(0); 
   const [selectedSquare, setSelectedSquare] = useState<Coordinates | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
 
-  // --- Logic ---
+  // --- Effects ---
+  useEffect(() => {
+    let storedId = localStorage.getItem('shogi_user_id');
+    if (!storedId) {
+      storedId = Math.random().toString(36).substring(2) + Date.now().toString(36);
+      localStorage.setItem('shogi_user_id', storedId);
+    }
+    setUserId(storedId);
+  }, []);
+
   const updateDisplay = useCallback((moves: Move[], index: number) => {
     let currentBoard = createInitialBoard();
     let currentHands = { sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND } };
@@ -108,13 +183,22 @@ const App: React.FC = () => {
     }
   }, [gameStatus, myRole]);
 
-
-  // --- Socket Events ---
   useEffect(() => {
-    if (!joined) return;
+    if (gameStatus !== 'playing') return;
+    const currentP = displayTurn; 
+    const isByoyomi = times[currentP] === 0;
+    const val = isByoyomi ? byoyomi[currentP] : times[currentP];
+    if (isByoyomi && val <= 10 && val > 0) {
+      playSound('alert');
+    }
+  }, [times, byoyomi, gameStatus, displayTurn]);
+
+  // --- Socket ---
+  useEffect(() => {
+    if (!joined || !userId) return;
 
     socket.connect();
-    socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal' });
+    socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId });
 
     socket.on("sync", (data: any) => {
       setHistory(data.history);
@@ -142,25 +226,29 @@ const App: React.FC = () => {
       setWinner(null);
       setRematchRequests({sente: false, gote: false});
       setViewIndex(0);
+      playSound('alert');
       alert("対局開始！お願いします。");
     });
 
     socket.on("game_finished", (data: { winner: Player, reason?: string }) => {
       setGameStatus('finished');
       setWinner(data.winner);
+      playSound('timeout');
       const reasonText = data.reason === 'timeout' ? ' (時間切れ)' : '';
       alert(`終局！ ${data.winner === 'sente' ? '先手' : '後手'}の勝ち${reasonText}`);
     });
 
     socket.on("move", (move: Move) => {
       setHistory(prev => {
+        const last = prev[prev.length - 1];
+        if (last && JSON.stringify(last) === JSON.stringify(move)) return prev;
+        playSound('move');
         const newHistory = [...prev, move];
         setViewIndex(newHistory.length); 
         return newHistory;
       });
     });
 
-    // ★追加: チャット受信
     socket.on("receive_message", (msg: any) => {
       setChatMessages(prev => [...prev, msg]);
     });
@@ -177,10 +265,9 @@ const App: React.FC = () => {
       socket.off("receive_message");
       socket.disconnect();
     };
-  }, [joined, roomId]);
+  }, [joined, roomId, userId]);
 
-
-  // --- Actions ---
+  // --- Handlers ---
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
     if (roomId.trim()) setJoined(true);
@@ -205,11 +292,13 @@ const App: React.FC = () => {
       alert("最新の局面に戻ってください");
       return;
     }
+    setHistory(prev => {
+      const newHistory = [...prev, move];
+      setViewIndex(newHistory.length);
+      return newHistory;
+    });
+    playSound('move');
     socket.emit("move", { roomId, move });
-    // Optimistic update
-    // const newHistory = [...history, move];
-    // setHistory(newHistory);
-    // setViewIndex(newHistory.length);
   };
   const requestUndo = () => {
     if (gameStatus === 'playing') return;
@@ -227,8 +316,6 @@ const App: React.FC = () => {
     const kif = exportKIF(history, initialBoard);
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
-
-  // ★追加: チャット送信
   const handleSendMessage = (text: string) => {
     socket.emit("send_message", { roomId, message: text, role: myRole });
   };
@@ -312,7 +399,6 @@ const App: React.FC = () => {
         flex flex-col items-end px-3 py-1 rounded border-b-4 transition-colors min-w-[80px]
         ${isTurn ? 'bg-stone-800 border-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-stone-900 border-stone-800 opacity-60'}
       `}>
-        {/* ラベルをシンプルに */}
         <span className="text-[12px] text-stone-400 font-bold tracking-wider mb-1">
           {owner === 'sente' ? '☗ 先手' : '☖ 後手'}
         </span>
@@ -328,7 +414,6 @@ const App: React.FC = () => {
     );
   };
 
-  // --- Render Login ---
   if (!joined) {
     return (
       <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
@@ -359,23 +444,11 @@ const App: React.FC = () => {
   const getRoleName = (r: Role) => r === 'sente' ? '先手' : r === 'gote' ? '後手' : '観戦';
 
   return (
-    // ★レイアウト変更: lg:flex-row でPC時は横並び
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-start lg:items-center justify-center p-2 gap-4 touch-none relative overflow-x-hidden">
-      {promotionCandidate && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-stone-800 p-6 rounded-xl border border-amber-600 shadow-2xl flex flex-col gap-4 items-center">
-            <h3 className="text-amber-100 text-lg font-bold">成りますか？</h3>
-            <div className="flex gap-4">
-              <button onClick={() => handlePromotionChoice(true)} className="bg-amber-600 text-white font-bold py-3 px-6 rounded-lg">成る</button>
-              <button onClick={() => handlePromotionChoice(false)} className="bg-stone-600 text-stone-200 font-bold py-3 px-6 rounded-lg">成らない</button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      
       {/* --- 左側 (メインゲームエリア) --- */}
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
-
+        
         {/* Header Info */}
         <div className="w-full max-w-lg flex justify-between items-start text-stone-400 text-sm px-1 mb-1">
           <div className="flex flex-col gap-1">
@@ -394,7 +467,7 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* --- Top Area (Opponent) --- */}
+        {/* --- Top Area --- */}
         <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
           <div className="flex-1 min-w-0">
              <Komadai 
@@ -404,9 +477,7 @@ const App: React.FC = () => {
                selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null}
              />
           </div>
-          <div>
-             {renderTimer(TopOwner)}
-          </div>
+          <div>{renderTimer(TopOwner)}</div>
         </div>
 
         {/* --- Board --- */}
@@ -420,13 +491,32 @@ const App: React.FC = () => {
             turn={displayTurn}
           />
           
+          {/* 成り選択ダイアログ (盤面中央・コンパクト) */}
+          {promotionCandidate && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none" style={{ transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
+              <div className="pointer-events-auto bg-stone-800/95 p-3 rounded-lg border border-amber-500 shadow-[0_0_20px_rgba(0,0,0,0.5)] flex gap-4 animate-in fade-in zoom-in duration-100">
+                <button 
+                  onClick={() => handlePromotionChoice(true)} 
+                  className="bg-amber-600 hover:bg-amber-500 text-white font-bold py-2 px-6 rounded shadow active:scale-95 transition-all text-sm whitespace-nowrap"
+                >
+                  成る
+                </button>
+                <button 
+                  onClick={() => handlePromotionChoice(false)} 
+                  className="bg-stone-600 hover:bg-stone-500 text-stone-200 font-bold py-2 px-6 rounded shadow active:scale-95 transition-all text-sm whitespace-nowrap"
+                >
+                  成らず
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* 対局待ちオーバーレイ */}
           {gameStatus === 'waiting' && (
              <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-[2px]" 
                   style={{ transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
                <div className="bg-stone-900/95 p-6 rounded-xl border border-amber-600 shadow-2xl text-center w-72">
                  <h2 className="text-amber-100 font-bold text-xl mb-4">対局設定</h2>
-                 
                  <div className="mb-6 space-y-4 text-left">
                     <div>
                       <label className="text-xs text-stone-400 flex justify-between">
@@ -453,7 +543,6 @@ const App: React.FC = () => {
                       />
                     </div>
                  </div>
-
                  {(myRole === 'sente' || myRole === 'gote') ? (
                    <div className="flex flex-col gap-3">
                      <button 
@@ -466,7 +555,6 @@ const App: React.FC = () => {
                      >
                        {readyStatus[myRole] ? "準備完了！" : "準備完了"}
                      </button>
-                     
                      <div className="text-xs text-stone-400 mt-2">
                        <div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>
                          {readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "..."}
@@ -481,7 +569,7 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* --- Bottom Area (Self) --- */}
+        {/* --- Bottom Area --- */}
         <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
           <div className="flex-1 min-w-0">
              <Komadai 
@@ -491,12 +579,10 @@ const App: React.FC = () => {
                selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null}
              />
           </div>
-          <div>
-             {renderTimer(BottomOwner)}
-          </div>
+          <div>{renderTimer(BottomOwner)}</div>
         </div>
 
-        {/* --- Footer Controls --- */}
+        {/* --- Footer --- */}
         <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
           {gameStatus !== 'playing' ? (
             <div className="flex items-center justify-between bg-stone-900/50 p-2 rounded border border-stone-800">
@@ -517,18 +603,15 @@ const App: React.FC = () => {
 
           <div className="flex justify-between items-center px-1">
              <button onClick={copyKIF} className="text-stone-500 hover:text-white text-xs underline">KIFコピー</button>
-
              <div className="flex gap-2">
                {gameStatus === 'playing' && (myRole === 'sente' || myRole === 'gote') && (
                   <button onClick={() => resignGame(myRole)} className="bg-stone-800 text-stone-400 border border-stone-600 px-4 py-2 rounded text-xs hover:bg-stone-700 hover:text-white">
                     投了する
                   </button>
                )}
-
                {(gameStatus === 'finished' || gameStatus === 'analysis') && (
                  <>
                    <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手戻す</button>
-                   
                    {(myRole === 'sente' || myRole === 'gote') && (
                      <div className="flex flex-col items-center relative">
                        <button 
@@ -548,7 +631,6 @@ const App: React.FC = () => {
                      </div>
                    )}
                    {myRole === 'audience' && <div className="text-[10px] text-stone-500">再対局待ち...</div>}
-
                    <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">
                      リセット
                    </button>
@@ -560,7 +642,6 @@ const App: React.FC = () => {
       </div>
 
       {/* --- 右側 (チャットエリア) --- */}
-      {/* PCでは高さ固定、スマホでは下に配置 */}
       <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
         <Chat 
           messages={chatMessages} 
