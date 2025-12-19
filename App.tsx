@@ -101,7 +101,6 @@ const formatTime = (seconds: number) => {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 };
 
-// ★指し手が同じかどうかを判定する関数（isCheckなどは無視する）
 const isSameMove = (a: Move, b: Move) => {
   const fromA = typeof a.from === 'string' ? a.from : `${a.from.x},${a.from.y}`;
   const fromB = typeof b.from === 'string' ? b.from : `${b.from.x},${b.from.y}`;
@@ -162,7 +161,7 @@ const App: React.FC = () => {
         const res = applyMove(currentBoard, currentHands, m, currentTurn);
         currentBoard = res.board;
         currentHands = res.hands;
-        currentTurn = res.turn;
+        currentTurn = res.turn as Player;
         lastM = { from: m.from, to: m.to };
       }
     } catch (e) {
@@ -205,13 +204,14 @@ const App: React.FC = () => {
       isProcessingMove.current = false;
       setHistory(data.history);
       setGameStatus(data.status);
-      setWinner(data.winner);
+      setWinner(data.winner as Player | null);
       setReadyStatus(data.ready || {sente: false, gote: false});
       setRematchRequests(data.rematchRequests || {sente: false, gote: false});
+      // 同期時は最新の手数へ
       setViewIndex(data.history.length);
       if (data.settings) setSettings(data.settings);
       if (data.times) setTimes(data.times);
-      if (data.yourRole) setMyRole(data.yourRole);
+      if (data.yourRole) setMyRole(data.yourRole as Role);
     });
 
     socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
@@ -256,10 +256,8 @@ const App: React.FC = () => {
       isProcessingMove.current = false;
 
       setHistory(prev => {
-        // ★修正: 重複判定を厳密に行う (isCheckなどの追加プロパティを無視)
         const last = prev[prev.length - 1];
         if (last && isSameMove(last, move)) {
-          // すでに同じ手がある場合、サーバーからの情報（isCheckなど）で上書きしてリターン
           const newHistory = [...prev];
           newHistory[newHistory.length - 1] = move;
           return newHistory;
@@ -267,6 +265,8 @@ const App: React.FC = () => {
         
         playSound('move');
         const newHistory = [...prev, move];
+        // 誰かが指したら最新手へ強制移動させるか？
+        // ここでは履歴に追加し、ViewIndexも更新する（同期動作）
         setViewIndex(newHistory.length); 
         return newHistory;
       });
@@ -306,33 +306,56 @@ const App: React.FC = () => {
   };
 
   const processMove = (move: Move) => {
-    if (gameStatus === 'waiting') return;
     if (gameStatus === 'playing') {
       if (myRole !== 'sente' && myRole !== 'gote') return;
       if (myRole !== displayTurn) return;
-    }
-    if (viewIndex !== history.length) {
-      alert("最新の局面に戻ってください");
-      return;
+      if (viewIndex !== history.length) {
+        alert("最新の局面に戻ってください");
+        return;
+      }
     }
 
     if (isProcessingMove.current) return;
     isProcessingMove.current = true;
 
-    setHistory(prev => {
-      const newHistory = [...prev, move];
-      setViewIndex(newHistory.length);
-      return newHistory;
-    });
+    // ★修正: 検討モードなら branchIndex を送る
+    if (gameStatus === 'finished' || gameStatus === 'analysis') {
+       socket.emit("move", { roomId, move, branchIndex: viewIndex });
+    } else {
+       // 対局中
+       socket.emit("move", { roomId, move });
+    }
+    
+    // クライアント側先行更新
+    // 検討モードで分岐する場合は history を切り詰めて表示
+    if ((gameStatus === 'finished' || gameStatus === 'analysis') && viewIndex < history.length) {
+       setHistory(prev => {
+          const truncated = prev.slice(0, viewIndex);
+          return [...truncated, move];
+       });
+    } else {
+       setHistory(prev => [...prev, move]);
+    }
+    setViewIndex(viewIndex + 1);
     playSound('move');
-    socket.emit("move", { roomId, move });
   };
 
   const requestUndo = () => {
+    // 検討モードで1手戻す = サーバーの履歴を1手戻す (全員同期)
+    // または、単にViewだけ戻す？
+    // 「分岐時に同期したい」という要望なので、Undoも同期させるのが自然だが、
+    // 誤操作防止のため確認を入れる。
+    if (gameStatus === 'finished' || gameStatus === 'analysis') {
+       if (history.length === 0) return;
+       if(window.confirm("局面を1手戻しますか？（全員に反映されます）")) socket.emit("undo", roomId);
+       return;
+    }
+
     if (gameStatus === 'playing') return;
     if (history.length === 0) return;
     if(window.confirm("1手戻しますか？")) socket.emit("undo", roomId);
   };
+
   const requestReset = () => {
     if(window.confirm("初期化しますか？")) socket.emit("reset", roomId);
   };
@@ -359,14 +382,7 @@ const App: React.FC = () => {
     if (selectedSquare) {
       const piece = displayBoard[selectedSquare.y][selectedSquare.x];
       if (!piece) return;
-      const isEnteringZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(coords.y);
-      const isLeavingZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(selectedSquare.y);
-      const canPromote = !piece.isPromoted && (isEnteringZone || isLeavingZone) && 
-                         piece.type !== PieceType.Gold && piece.type !== PieceType.King;
       
-      const baseMove: Move = { from: selectedSquare, to: coords, piece: piece.type, drop: false };
-      if (!isValidMove(displayBoard, displayTurn, baseMove)) return; 
-
       let mustPromote = false;
       if (displayTurn === 'sente') {
         if ((piece.type === PieceType.Pawn || piece.type === PieceType.Lance) && coords.y === 0) mustPromote = true;
@@ -376,23 +392,45 @@ const App: React.FC = () => {
         if (piece.type === PieceType.Knight && coords.y >= 7) mustPromote = true;
       }
 
+      const baseMove: Move = { 
+        from: selectedSquare, 
+        to: coords, 
+        piece: piece.type, 
+        drop: false, 
+        isPromoted: mustPromote ? true : false 
+      };
+      
+      if (!isValidMove(displayBoard, displayTurn, baseMove)) return; 
+
+      const isEnteringZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(coords.y);
+      const isLeavingZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(selectedSquare.y);
+      const canPromote = !piece.isPromoted && (isEnteringZone || isLeavingZone) && 
+                         piece.type !== PieceType.Gold && piece.type !== PieceType.King;
+
       if (mustPromote) {
         processMove({ ...baseMove, isPromoted: true });
         setSelectedSquare(null);
         return;
       }
       if (canPromote) {
-        setPromotionCandidate({ move: baseMove });
+        setPromotionCandidate({ move: { ...baseMove, isPromoted: false } });
         setSelectedSquare(null);
         return;
       }
-      processMove({ ...baseMove, isPromoted: false });
+      
+      processMove(baseMove);
       setSelectedSquare(null);
       return;
     }
     if (selectedHandPiece) {
       if (clickedPiece === null) {
-        const move: Move = { from: 'hand', to: coords, piece: selectedHandPiece, drop: true };
+        const move: Move = { 
+          from: 'hand', 
+          to: coords, 
+          piece: selectedHandPiece, 
+          drop: true,
+          isPromoted: false 
+        };
         if (isValidMove(displayBoard, displayTurn, move)) {
           processMove(move);
         }

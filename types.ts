@@ -1,4 +1,6 @@
-export type Player = 'sente' | 'gote'; // Sente (Black/First), Gote (White/Second)
+// src/types.ts
+
+export type Player = 'sente' | 'gote';
 
 export enum PieceType {
   Pawn = 'Pawn',
@@ -13,8 +15,13 @@ export enum PieceType {
   PromotedLance = 'PromotedLance',
   PromotedKnight = 'PromotedKnight',
   PromotedSilver = 'PromotedSilver',
-  Horse = 'Horse', // Promoted Bishop
-  Dragon = 'Dragon', // Promoted Rook
+  Horse = 'Horse',
+  Dragon = 'Dragon'
+}
+
+export interface Coordinates {
+  x: number;
+  y: number;
 }
 
 export interface Piece {
@@ -23,35 +30,22 @@ export interface Piece {
   isPromoted: boolean;
 }
 
-export type BoardState = (Piece | null)[][]; // 9x9 grid
+export type BoardState = (Piece | null)[][];
 
-export interface Coordinates {
-  x: number; // 0-8, corresponding to 9-1 in Shogi coords
-  y: number; // 0-8, corresponding to a-i (1-9) in Shogi coords
+export type Hand = Record<PieceType, number>;
+
+// ★追加: 時間情報の型
+export interface MoveTime {
+  now: number;   // その一手にかかった時間(秒)
+  total: number; // 通算消費時間(秒)
 }
 
 export interface Move {
   from: Coordinates | 'hand';
   to: Coordinates;
   piece: PieceType;
-  isPromoted?: boolean;
-  drop?: boolean;
-}
-
-export interface Hand {
-  [PieceType.Pawn]: number;
-  [PieceType.Lance]: number;
-  [PieceType.Knight]: number;
-  [PieceType.Silver]: number;
-  [PieceType.Gold]: number;
-  [PieceType.Bishop]: number;
-  [PieceType.Rook]: number;
-  // King and Promoted pieces don't exist in hand
-  [PieceType.King]: number;
-  [PieceType.PromotedPawn]: number;
-  [PieceType.PromotedLance]: number;
-  [PieceType.PromotedKnight]: number;
-  [PieceType.PromotedSilver]: number;
-  [PieceType.Horse]: number;
-  [PieceType.Dragon]: number;
+  drop: boolean;
+  isPromoted: boolean;
+  isCheck?: boolean; // 王手フラグ
+  time?: MoveTime;   // ★追加: 時間情報
 }
