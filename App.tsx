@@ -137,6 +137,11 @@ const App: React.FC = () => {
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
 
+  // ★追加: ローカル検討モードの管理
+  const [isLocalMode, setIsLocalMode] = useState(false);
+  // Socketイベント内でstateを参照するためのRef
+  const isLocalModeRef = useRef(false);
+
   const isProcessingMove = useRef(false);
 
   useEffect(() => {
@@ -194,6 +199,23 @@ const App: React.FC = () => {
     }
   }, [times, byoyomi, gameStatus, displayTurn]);
 
+  // ★追加: ローカルモード切替処理
+  const toggleLocalMode = () => {
+    if (isLocalMode) {
+      // ローカルモード終了（同期に戻る）
+      if (window.confirm("ローカル検討を終了し、最新の同期局面に戻りますか？")) {
+        setIsLocalMode(false);
+        isLocalModeRef.current = false;
+        // サーバーに最新状態を要求 (join_roomでsyncが返ってくる仕組みを利用)
+        socket.emit("join_room", { roomId, mode: isAnalysisRoom ? 'analysis' : 'normal', userId });
+      }
+    } else {
+      // ローカルモード開始
+      setIsLocalMode(true);
+      isLocalModeRef.current = true;
+    }
+  };
+
   useEffect(() => {
     if (!joined || !userId) return;
 
@@ -207,7 +229,6 @@ const App: React.FC = () => {
       setWinner(data.winner as Player | null);
       setReadyStatus(data.ready || {sente: false, gote: false});
       setRematchRequests(data.rematchRequests || {sente: false, gote: false});
-      // 同期時は最新の手数へ
       setViewIndex(data.history.length);
       if (data.settings) setSettings(data.settings);
       if (data.times) setTimes(data.times);
@@ -224,6 +245,10 @@ const App: React.FC = () => {
 
     socket.on("game_started", () => {
       isProcessingMove.current = false;
+      // 対局開始時は強制的にローカルモード解除
+      setIsLocalMode(false);
+      isLocalModeRef.current = false;
+      
       setHistory([]);
       setGameStatus('playing');
       setWinner(null);
@@ -253,6 +278,9 @@ const App: React.FC = () => {
     });
 
     socket.on("move", (move: Move) => {
+      // ★修正: ローカルモード中は、サーバーからの指し手を受信しても無視する（画面を動かさない）
+      if (isLocalModeRef.current) return;
+
       isProcessingMove.current = false;
 
       setHistory(prev => {
@@ -265,8 +293,6 @@ const App: React.FC = () => {
         
         playSound('move');
         const newHistory = [...prev, move];
-        // 誰かが指したら最新手へ強制移動させるか？
-        // ここでは履歴に追加し、ViewIndexも更新する（同期動作）
         setViewIndex(newHistory.length); 
         return newHistory;
       });
@@ -316,9 +342,24 @@ const App: React.FC = () => {
     }
 
     if (isProcessingMove.current) return;
+    
+    // ★修正: ローカルモードならサーバー送信をスキップ
+    if (isLocalMode) {
+       // サーバーには送らないが、ローカルの履歴は更新する
+       setHistory(prev => {
+          // もし過去の局面から指したなら、そこから分岐（以降を削除して追加）
+          const truncated = prev.slice(0, viewIndex);
+          return [...truncated, move];
+       });
+       setViewIndex(viewIndex + 1);
+       playSound('move');
+       return;
+    }
+
+    // 通常モード（同期）
     isProcessingMove.current = true;
 
-    // ★修正: 検討モードなら branchIndex を送る
+    // 検討モードなら分岐同期（branchIndex送信）
     if (gameStatus === 'finished' || gameStatus === 'analysis') {
        socket.emit("move", { roomId, move, branchIndex: viewIndex });
     } else {
@@ -327,7 +368,6 @@ const App: React.FC = () => {
     }
     
     // クライアント側先行更新
-    // 検討モードで分岐する場合は history を切り詰めて表示
     if ((gameStatus === 'finished' || gameStatus === 'analysis') && viewIndex < history.length) {
        setHistory(prev => {
           const truncated = prev.slice(0, viewIndex);
@@ -341,10 +381,14 @@ const App: React.FC = () => {
   };
 
   const requestUndo = () => {
-    // 検討モードで1手戻す = サーバーの履歴を1手戻す (全員同期)
-    // または、単にViewだけ戻す？
-    // 「分岐時に同期したい」という要望なので、Undoも同期させるのが自然だが、
-    // 誤操作防止のため確認を入れる。
+    // ★修正: ローカルモードならサーバーに送らず、自分の画面だけ戻す
+    if (isLocalMode) {
+       if (viewIndex > 0) {
+          setViewIndex(viewIndex - 1);
+       }
+       return;
+    }
+
     if (gameStatus === 'finished' || gameStatus === 'analysis') {
        if (history.length === 0) return;
        if(window.confirm("局面を1手戻しますか？（全員に反映されます）")) socket.emit("undo", roomId);
@@ -372,7 +416,10 @@ const App: React.FC = () => {
   };
 
   const handleSquareClick = (coords: Coordinates) => {
+    // ローカルモード中はWaitingでも操作可能にする場合はここを調整
+    // 基本はWaiting中は操作不可でOK
     if (gameStatus === 'waiting') return;
+    
     const clickedPiece = displayBoard[coords.y][coords.x];
     if (clickedPiece?.owner === displayTurn) {
       setSelectedSquare(coords);
@@ -509,6 +556,8 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-start lg:items-center justify-center p-2 gap-4 touch-none relative overflow-x-hidden">
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
+        
+        {/* Header Info */}
         <div className="w-full max-w-lg flex justify-between items-start text-stone-400 text-sm px-1 mb-1">
           <div className="flex flex-col gap-1">
             <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
@@ -524,12 +573,16 @@ const App: React.FC = () => {
             {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
           </div>
         </div>
+
+        {/* --- Top Area --- */}
         <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
           <div className="flex-1 min-w-0">
              <Komadai hand={TopHand} owner={TopOwner} isCurrentTurn={displayTurn === TopOwner} onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null} />
           </div>
           <div>{renderTimer(TopOwner)}</div>
         </div>
+
+        {/* --- Board --- */}
         <div className="w-full max-w-lg relative" style={{ transition: 'transform 0.5s', transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
           <ShogiBoard 
             board={displayBoard} onSquareClick={handleSquareClick} selectedSquare={selectedSquare} validMoves={[]} lastMove={displayLastMove} turn={displayTurn}
@@ -566,25 +619,49 @@ const App: React.FC = () => {
              </div>
           )}
         </div>
+
+        {/* --- Bottom Area --- */}
         <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
           <div className="flex-1 min-w-0">
              <Komadai hand={BottomHand} owner={BottomOwner} isCurrentTurn={displayTurn === BottomOwner} onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null} />
           </div>
           <div>{renderTimer(BottomOwner)}</div>
         </div>
+
+        {/* --- Footer (Controls) --- */}
         <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
           {gameStatus !== 'playing' ? (
-            <div className="flex items-center justify-between bg-stone-900/50 p-2 rounded border border-stone-800">
-              <div className="flex gap-2 items-center">
-                <div className="text-stone-400 text-xs font-mono">{viewIndex}手目</div>
-                <button onClick={() => setIsFlipped(!isFlipped)} className="bg-stone-700 text-stone-300 px-2 py-0.5 rounded text-[10px]">反転</button>
+            <div className="flex flex-col gap-2 bg-stone-900/50 p-2 rounded border border-stone-800">
+              {/* コントロール列 */}
+              <div className="flex items-center justify-between">
+                <div className="flex gap-2 items-center">
+                  <div className="text-stone-400 text-xs font-mono">{viewIndex}手目</div>
+                  <button onClick={() => setIsFlipped(!isFlipped)} className="bg-stone-700 text-stone-300 px-2 py-0.5 rounded text-[10px]">反転</button>
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => setViewIndex(Math.max(0, viewIndex - 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">◀</button>
+                  <button onClick={() => setViewIndex(Math.min(history.length, viewIndex + 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">▶</button>
+                </div>
               </div>
-              <div className="flex gap-1">
-                <button onClick={() => setViewIndex(Math.max(0, viewIndex - 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">◀</button>
-                <button onClick={() => setViewIndex(Math.min(history.length, viewIndex + 1))} className="bg-stone-700 text-stone-200 px-3 py-1 rounded text-xs">▶</button>
-              </div>
+              
+              {/* ★追加: ローカル検討モード切替ボタン */}
+              {(gameStatus === 'finished' || gameStatus === 'analysis') && (
+                <button 
+                  onClick={toggleLocalMode}
+                  className={`w-full py-2 rounded text-xs font-bold transition-all shadow-md
+                    ${isLocalMode 
+                      ? 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white hover:from-blue-600 hover:to-indigo-600 border border-blue-500' 
+                      : 'bg-stone-700 text-stone-300 hover:bg-stone-600 border border-stone-600'}
+                  `}
+                >
+                  {isLocalMode ? " 同期に戻る " : " ローカル検討 "}
+                </button>
+              )}
             </div>
-          ) : ( <div className="flex justify-center p-1 text-stone-600 text-xs font-mono">{viewIndex}手目</div> )}
+          ) : ( 
+            <div className="flex justify-center p-1 text-stone-600 text-xs font-mono">{viewIndex}手目</div> 
+          )}
+
           <div className="flex justify-between items-center px-1">
              <button onClick={copyKIF} className="text-stone-500 hover:text-white text-xs underline">KIFコピー</button>
              <div className="flex gap-2">
@@ -608,9 +685,12 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* --- 右側 (チャットエリア) --- */}
       <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
         <Chat messages={chatMessages} onSendMessage={handleSendMessage} myRole={myRole} />
       </div>
+
     </div>
   );
 };

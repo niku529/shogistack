@@ -1,0 +1,47 @@
+[33mcommit 0cb4fd10e7090147130385c8d9c3a0f0b95fda0e[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 22:52:29 2025 +0900
+
+    棋譜コピー周りの大きな修正とルールの適応
+
+[33mcommit 5b7d91b51f66609d0300eb29bab504f48ea11e6d[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 21:36:39 2025 +0900
+
+    update
+
+[33mcommit 5e178b3dc5aed2739ee70631730cd44d395d542e[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 20:37:41 2025 +0900
+
+    音声周りの追加とダイアログの修正
+
+[33mcommit cf2afe828076cf54252ae139ab3efe1de2c3f230[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 19:22:19 2025 +0900
+
+    チャットボックスの導入と不具合の修正
+
+[33mcommit e30f38a4569f0cf337b25f20794441ae50160eda[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 16:20:20 2025 +0900
+
+    update
+
+[33mcommit 3967894503efe6c1c4cfc5c10231fff13ed222f8[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 16:03:50 2025 +0900
+
+    update
+
+[33mcommit b91f6129a10d169716a979668c21cff171867e5b[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 14:10:26 2025 +0900
+
+    add matchmaking logic
+
+[33mcommit 9bde271d6fdc3fcdd56b71691421ad7b9b445c1f[m
+Author: createkill <keizeau@gmail.com>
+Date:   Fri Dec 19 12:37:46 2025 +0900
+
+    initial commit
