@@ -639,7 +639,7 @@ const App: React.FC = () => {
                       : 'bg-stone-700 text-stone-300 hover:bg-stone-600 border border-stone-600'}
                   `}
                 >
-                  {isLocalMode ? "📡 同期に戻る (最新局面へ)" : "🤫 一人で検討する (同期OFF)"}
+                  {isLocalMode ? "同期に戻る" : "ローカル検討"}
                 </button>
               )}
             </div>
