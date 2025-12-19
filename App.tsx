@@ -14,10 +14,20 @@ const EMPTY_HAND = {
   [PieceType.PromotedSilver]: 0, [PieceType.Horse]: 0, [PieceType.Dragon]: 0,
 };
 
-const socket: Socket = io("http://localhost:3001", {
+// src/App.tsx
+
+// ... (省略)
+
+// 変更前: const socket: Socket = io("http://localhost:3001", ...
+// 変更後:
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+
+const socket: Socket = io(BACKEND_URL, {
   transports: ['websocket', 'polling'],
   autoConnect: false,
 });
+
+// ... (以下省略)
 
 const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
 const bufferSize = audioCtx.sampleRate * 2.0;
