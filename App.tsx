@@ -513,7 +513,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
         <form onSubmit={handleJoin} className="bg-stone-800 p-8 rounded-lg shadow-xl border border-amber-700/30 max-w-sm w-full space-y-4">
-          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">将棋コネクト</h1>
+          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">Shogistack</h1>
           <div>
             <label className="block text-stone-400 text-sm mb-2">ルーム名</label>
             <input 
