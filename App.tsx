@@ -14,6 +14,17 @@ const socket: Socket = io("http://localhost:3001", {
 type GameStatus = 'waiting' | 'playing' | 'finished' | 'analysis';
 type Role = 'sente' | 'gote' | 'audience';
 
+interface TimeSettings {
+  initial: number;
+  byoyomi: number;
+}
+
+const formatTime = (seconds: number) => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+};
+
 const App: React.FC = () => {
   // --- Connection State ---
   const [roomId, setRoomId] = useState<string>("");
@@ -21,6 +32,9 @@ const App: React.FC = () => {
   const [joined, setJoined] = useState(false);
   const [myRole, setMyRole] = useState<Role>('audience');
   const [readyStatus, setReadyStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
+  
+  // ★追加: 再対局リクエスト状況
+  const [rematchRequests, setRematchRequests] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
 
   // --- View State ---
   const [isFlipped, setIsFlipped] = useState(false);
@@ -30,6 +44,12 @@ const App: React.FC = () => {
   const [winner, setWinner] = useState<Player | null>(null);
   const [initialBoard] = useState<BoardState>(createInitialBoard());
   
+  // --- Timer Data ---
+  const [settings, setSettings] = useState<TimeSettings>({ initial: 600, byoyomi: 30 });
+  const [times, setTimes] = useState<{sente: number, gote: number}>({sente: 600, gote: 600});
+  const [byoyomi, setByoyomi] = useState<{sente: number, gote: number}>({sente: 30, gote: 30});
+
+  // Display Data
   const [displayBoard, setDisplayBoard] = useState<BoardState>(createInitialBoard());
   const [displayHands, setDisplayHands] = useState<{ sente: Hand; gote: Hand }>({
     sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND },
@@ -45,7 +65,7 @@ const App: React.FC = () => {
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
 
-  // --- 盤面再生 ---
+  // --- Logic ---
   const updateDisplay = useCallback((moves: Move[], index: number) => {
     let currentBoard = createInitialBoard();
     let currentHands = { sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND } };
@@ -72,7 +92,6 @@ const App: React.FC = () => {
     updateDisplay(history, viewIndex);
   }, [history, viewIndex, updateDisplay]);
 
-  // 自動反転ロジック
   useEffect(() => {
     if (gameStatus === 'playing') {
       setIsFlipped(myRole === 'gote');
@@ -92,35 +111,46 @@ const App: React.FC = () => {
       setGameStatus(data.status);
       setWinner(data.winner);
       setReadyStatus(data.ready || {sente: false, gote: false});
+      setRematchRequests(data.rematchRequests || {sente: false, gote: false}); // 同期
       setViewIndex(data.history.length);
       
-      if (data.yourRole) {
-        setMyRole(data.yourRole);
-      }
+      if (data.settings) setSettings(data.settings);
+      if (data.times) setTimes(data.times);
+      if (data.yourRole) setMyRole(data.yourRole);
     });
 
-    socket.on("ready_status", (ready: {sente: boolean, gote: boolean}) => {
-      setReadyStatus(ready);
+    socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
+    socket.on("ready_status", (ready: {sente: boolean, gote: boolean}) => setReadyStatus(ready));
+    
+    // ★再対局リクエスト状況の更新
+    socket.on("rematch_status", (req: {sente: boolean, gote: boolean}) => {
+      setRematchRequests(req);
+    });
+
+    socket.on("time_update", (data: { times: any, currentByoyomi: any }) => {
+      setTimes(data.times);
+      setByoyomi(data.currentByoyomi);
     });
 
     socket.on("game_started", () => {
       setHistory([]);
       setGameStatus('playing');
       setWinner(null);
+      setRematchRequests({sente: false, gote: false}); // リセット
       setViewIndex(0);
       alert("対局開始！お願いします。");
     });
 
-    socket.on("game_finished", (data: { winner: Player }) => {
+    socket.on("game_finished", (data: { winner: Player, reason?: string }) => {
       setGameStatus('finished');
       setWinner(data.winner);
-      alert(`終局！ ${data.winner === 'sente' ? '先手' : '後手'}の勝ち`);
+      const reasonText = data.reason === 'timeout' ? ' (時間切れ)' : '';
+      alert(`終局！ ${data.winner === 'sente' ? '先手' : '後手'}の勝ち${reasonText}`);
     });
 
     socket.on("move", (move: Move) => {
       setHistory(prev => {
         const newHistory = [...prev, move];
-        // 対局中は強制的に最新へ
         setViewIndex(newHistory.length); 
         return newHistory;
       });
@@ -128,7 +158,10 @@ const App: React.FC = () => {
 
     return () => {
       socket.off("sync");
+      socket.off("settings_updated");
       socket.off("ready_status");
+      socket.off("rematch_status");
+      socket.off("time_update");
       socket.off("game_started");
       socket.off("game_finished");
       socket.off("move");
@@ -144,11 +177,14 @@ const App: React.FC = () => {
     if (roomId.trim()) setJoined(true);
   };
 
+  const updateSettings = (key: keyof TimeSettings, value: number) => {
+    const newSettings = { ...settings, [key]: value };
+    socket.emit("update_settings", { roomId, settings: newSettings });
+  };
+
   const toggleReady = () => {
     if (myRole === 'sente' || myRole === 'gote') {
       socket.emit("toggle_ready", { roomId, role: myRole });
-    } else {
-      alert("観戦者は準備できません");
     }
   };
 
@@ -158,18 +194,14 @@ const App: React.FC = () => {
 
   const processMove = (move: Move) => {
     if (gameStatus === 'waiting') return;
-    
-    // 対局中の制限
     if (gameStatus === 'playing') {
       if (myRole !== 'sente' && myRole !== 'gote') return;
       if (myRole !== displayTurn) return;
     }
-
     if (viewIndex !== history.length) {
       alert("最新の局面に戻ってください");
       return;
     }
-
     socket.emit("move", { roomId, move });
     const newHistory = [...history, move];
     setHistory(newHistory);
@@ -177,7 +209,6 @@ const App: React.FC = () => {
   };
 
   const requestUndo = () => {
-    // 対局中はボタン自体消すのでここは念のため
     if (gameStatus === 'playing') return;
     if (history.length === 0) return;
     if(window.confirm("1手戻しますか？")) socket.emit("undo", roomId);
@@ -187,39 +218,38 @@ const App: React.FC = () => {
     if(window.confirm("初期化しますか？")) socket.emit("reset", roomId);
   };
 
+  // ★修正: 再対局リクエスト (roleを送る)
+  const requestRematch = () => {
+    if (myRole === 'sente' || myRole === 'gote') {
+      socket.emit("rematch", { roomId, role: myRole });
+    } else {
+      alert("観戦者は提案できません");
+    }
+  };
+
   const copyKIF = () => {
     const kif = exportKIF(history, initialBoard);
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
 
-  // --- Click Handlers ---
+  // --- Click Handlers (Same as before) ---
   const handleSquareClick = (coords: Coordinates) => {
     if (gameStatus === 'waiting') return;
-
     const clickedPiece = displayBoard[coords.y][coords.x];
-
     if (clickedPiece?.owner === displayTurn) {
       setSelectedSquare(coords);
       setSelectedHandPiece(null);
       return;
     }
-
     if (selectedSquare) {
       const piece = displayBoard[selectedSquare.y][selectedSquare.x];
       if (!piece) return;
-
       const isEnteringZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(coords.y);
       const isLeavingZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(selectedSquare.y);
       const canPromote = !piece.isPromoted && (isEnteringZone || isLeavingZone) && 
                          piece.type !== PieceType.Gold && piece.type !== PieceType.King;
       
-      const baseMove: Move = {
-        from: selectedSquare,
-        to: coords,
-        piece: piece.type,
-        drop: false
-      };
-
+      const baseMove: Move = { from: selectedSquare, to: coords, piece: piece.type, drop: false };
       if (!isValidMove(displayBoard, displayTurn, baseMove)) return; 
 
       let mustPromote = false;
@@ -236,26 +266,18 @@ const App: React.FC = () => {
         setSelectedSquare(null);
         return;
       }
-
       if (canPromote) {
         setPromotionCandidate({ move: baseMove });
         setSelectedSquare(null);
         return;
       }
-
       processMove({ ...baseMove, isPromoted: false });
       setSelectedSquare(null);
       return;
     }
-
     if (selectedHandPiece) {
       if (clickedPiece === null) {
-        const move: Move = {
-          from: 'hand',
-          to: coords,
-          piece: selectedHandPiece,
-          drop: true
-        };
+        const move: Move = { from: 'hand', to: coords, piece: selectedHandPiece, drop: true };
         if (isValidMove(displayBoard, displayTurn, move)) {
           processMove(move);
         }
@@ -277,7 +299,34 @@ const App: React.FC = () => {
     setPromotionCandidate(null);
   };
 
-  // --- Render ---
+  // --- Render Helpers ---
+  const renderTimer = (owner: Player) => {
+    const isTurn = displayTurn === owner && gameStatus === 'playing';
+    const time = times[owner];
+    const byo = byoyomi[owner];
+    const inByoyomi = time === 0;
+
+    return (
+      <div className={`
+        flex flex-col items-end px-3 py-1 rounded border-b-4 transition-colors min-w-[80px]
+        ${isTurn ? 'bg-stone-800 border-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-stone-900 border-stone-800 opacity-60'}
+      `}>
+        <span className="text-[10px] text-stone-500 font-bold tracking-wider">
+          {owner === 'sente' ? '先手' : '後手'}
+        </span>
+        <div className="flex items-baseline gap-1">
+           <span className={`font-mono text-xl ${inByoyomi ? 'text-red-400' : 'text-stone-200'}`}>
+             {formatTime(time)}
+           </span>
+           <span className={`font-mono text-sm ${inByoyomi && isTurn ? 'text-red-500 font-bold animate-pulse' : 'text-stone-500'}`}>
+             {inByoyomi ? byo : settings.byoyomi}
+           </span>
+        </div>
+      </div>
+    );
+  };
+
+  // --- Render Login ---
   if (!joined) {
     return (
       <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
@@ -305,8 +354,6 @@ const App: React.FC = () => {
   const BottomOwner = isFlipped ? 'gote' : 'sente';
   const TopHand = isFlipped ? displayHands.sente : displayHands.gote;
   const TopOwner = isFlipped ? 'sente' : 'gote';
-
-  // 役割表示名
   const getRoleName = (r: Role) => r === 'sente' ? '先手' : r === 'gote' ? '後手' : '観戦';
 
   return (
@@ -324,7 +371,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Header */}
+      {/* Header Info */}
       <div className="w-full max-w-lg flex justify-between items-start text-stone-400 text-sm px-1">
         <div className="flex flex-col gap-1">
           <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
@@ -333,30 +380,31 @@ const App: React.FC = () => {
           </div>
         </div>
         
-        {/* タイマー表示 (UIのみ) */}
-        <div className="flex gap-2">
-            <div className={`flex flex-col items-end px-2 py-1 rounded border-r-4 ${displayTurn === 'gote' ? 'bg-stone-800 border-amber-500' : 'border-stone-800 opacity-50'}`}>
-                <span className="text-[10px]">後手</span>
-                <span className="font-mono font-bold text-stone-200">10:00 <span className="text-[10px] text-stone-400">60</span></span>
-            </div>
-            <div className={`flex flex-col items-end px-2 py-1 rounded border-l-4 ${displayTurn === 'sente' ? 'bg-stone-800 border-amber-500' : 'border-stone-800 opacity-50'}`}>
-                <span className="text-[10px]">先手</span>
-                <span className="font-mono font-bold text-stone-200">10:00 <span className="text-[10px] text-stone-400">60</span></span>
-            </div>
+        <div className={`px-3 py-1 rounded text-xs font-bold border
+            ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : 
+              gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' :
+              'bg-stone-700 text-stone-300 border-stone-600'}
+        `}>
+          {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
         </div>
       </div>
 
-      {/* Top Hand */}
-      <div className="w-full max-w-lg">
-        <Komadai 
-          hand={TopHand} owner={TopOwner} 
-          isCurrentTurn={displayTurn === TopOwner} 
-          onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} 
-          selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null}
-        />
+      {/* --- Top Area --- */}
+      <div className="w-full max-w-lg flex items-end justify-between mb-1">
+        <div className="flex-1">
+           <Komadai 
+             hand={TopHand} owner={TopOwner} 
+             isCurrentTurn={displayTurn === TopOwner} 
+             onSelectPiece={(p) => handleHandPieceClick(p, TopOwner)} 
+             selectedPiece={displayTurn === TopOwner ? selectedHandPiece : null}
+           />
+        </div>
+        <div className="ml-2">
+           {renderTimer(TopOwner)}
+        </div>
       </div>
 
-      {/* Board */}
+      {/* --- Board --- */}
       <div className="w-full max-w-lg relative" style={{ transition: 'transform 0.5s', transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
         <ShogiBoard 
           board={displayBoard} 
@@ -369,11 +417,38 @@ const App: React.FC = () => {
         
         {/* 対局待ちオーバーレイ */}
         {gameStatus === 'waiting' && (
-           <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-10 backdrop-blur-[2px]" 
+           <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-[2px]" 
                 style={{ transform: isFlipped ? 'rotate(180deg)' : 'none' }}>
-             <div className="bg-stone-900/90 p-6 rounded-xl border border-amber-600 shadow-2xl text-center w-64">
-               <h2 className="text-amber-100 font-bold text-xl mb-4">対局準備</h2>
+             <div className="bg-stone-900/95 p-6 rounded-xl border border-amber-600 shadow-2xl text-center w-72">
+               <h2 className="text-amber-100 font-bold text-xl mb-4">対局設定</h2>
                
+               <div className="mb-6 space-y-4 text-left">
+                  <div>
+                    <label className="text-xs text-stone-400 flex justify-between">
+                      <span>持ち時間</span>
+                      <span className="text-amber-400 font-mono">{Math.floor(settings.initial/60)}分</span>
+                    </label>
+                    <input 
+                      type="range" min="0" max="3600" step="60"
+                      value={settings.initial} 
+                      onChange={(e) => updateSettings('initial', Number(e.target.value))}
+                      className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-stone-400 flex justify-between">
+                      <span>秒読み</span>
+                      <span className="text-amber-400 font-mono">{settings.byoyomi}秒</span>
+                    </label>
+                    <input 
+                      type="range" min="0" max="60" step="10"
+                      value={settings.byoyomi} 
+                      onChange={(e) => updateSettings('byoyomi', Number(e.target.value))}
+                      className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+               </div>
+
                {(myRole === 'sente' || myRole === 'gote') ? (
                  <div className="flex flex-col gap-3">
                    <button 
@@ -384,38 +459,42 @@ const App: React.FC = () => {
                          : 'bg-stone-700 text-stone-300 hover:bg-stone-600'
                        }`}
                    >
-                     {readyStatus[myRole] ? "準備完了！" : "準備完了を押す"}
+                     {readyStatus[myRole] ? "準備完了！" : "準備完了"}
                    </button>
                    
                    <div className="text-xs text-stone-400 mt-2">
-                     <div>相手の状況:</div>
-                     <div className={`font-bold ${readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400' : 'text-stone-500'}`}>
-                       {readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "準備OK" : "待機中..."}
-                     </div>
+                     <div>相手: <span className={readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? 'text-green-400 font-bold' : 'text-stone-500'}>
+                       {readyStatus[myRole === 'sente' ? 'gote' : 'sente'] ? "OK" : "..."}
+                     </span></div>
                    </div>
                  </div>
                ) : (
-                 <div className="text-stone-400">対局者の準備を待っています...</div>
+                 <div className="text-stone-400 text-sm">設定中...</div>
                )}
              </div>
            </div>
         )}
       </div>
 
-      {/* Bottom Hand */}
-      <div className="w-full max-w-lg">
-        <Komadai 
-          hand={BottomHand} owner={BottomOwner} 
-          isCurrentTurn={displayTurn === BottomOwner} 
-          onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} 
-          selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null}
-        />
+      {/* --- Bottom Area --- */}
+      <div className="w-full max-w-lg flex items-start justify-between mt-1">
+        <div className="flex-1">
+           <Komadai 
+             hand={BottomHand} owner={BottomOwner} 
+             isCurrentTurn={displayTurn === BottomOwner} 
+             onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} 
+             selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null}
+           />
+        </div>
+        <div className="ml-2">
+           {renderTimer(BottomOwner)}
+        </div>
       </div>
 
-      {/* Footer Controls */}
-      <div className="w-full max-w-lg flex flex-col gap-2 mt-1">
+      {/* --- Footer Controls --- */}
+      <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
         
-        {/* 手数ナビ (対局中は非表示) */}
+        {/* 手数ナビ */}
         {gameStatus !== 'playing' ? (
           <div className="flex items-center justify-between bg-stone-900/50 p-2 rounded border border-stone-800">
             <div className="flex gap-2 items-center">
@@ -428,8 +507,7 @@ const App: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="flex justify-center p-2 text-stone-500 text-xs font-mono border border-transparent">
-             {/* 対局中は手数だけシンプルに表示 */}
+          <div className="flex justify-center p-1 text-stone-600 text-xs font-mono">
              {viewIndex}手目
           </div>
         )}
@@ -439,18 +517,43 @@ const App: React.FC = () => {
            <button onClick={copyKIF} className="text-stone-500 hover:text-white text-xs underline">KIFコピー</button>
 
            <div className="flex gap-2">
-             {/* 対局中の投了ボタン */}
              {gameStatus === 'playing' && (myRole === 'sente' || myRole === 'gote') && (
                 <button onClick={() => resignGame(myRole)} className="bg-stone-800 text-stone-400 border border-stone-600 px-4 py-2 rounded text-xs hover:bg-stone-700 hover:text-white">
                   投了する
                 </button>
              )}
 
-             {/* 感想戦・検討モードの機能 */}
              {(gameStatus === 'finished' || gameStatus === 'analysis') && (
                <>
-                 <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs">1手戻す</button>
-                 <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs">リセット</button>
+                 <button onClick={requestUndo} className="bg-stone-700 text-stone-300 px-3 py-1 rounded text-xs hover:bg-stone-600">1手戻す</button>
+                 
+                 {/* ★修正: 再対局ボタン (相手の状況表示) */}
+                 {(myRole === 'sente' || myRole === 'gote') && (
+                   <div className="flex flex-col items-center">
+                     <button 
+                       onClick={requestRematch} 
+                       className={`px-3 py-1 rounded text-xs shadow font-bold transition-colors
+                         ${rematchRequests[myRole] ? 'bg-amber-800 text-stone-400' : 'bg-amber-700 text-white hover:bg-amber-600'}
+                       `}
+                       disabled={rematchRequests[myRole]}
+                     >
+                       {rematchRequests[myRole] ? "相手待ち..." : "再対局"}
+                     </button>
+                     {/* 相手が押していたら小さく表示 */}
+                     {rematchRequests[myRole === 'sente' ? 'gote' : 'sente'] && (
+                        <span className="text-[10px] text-green-400 absolute -mt-4 animate-bounce">
+                           相手OK!
+                        </span>
+                     )}
+                   </div>
+                 )}
+                 {myRole === 'audience' && (
+                   <div className="text-[10px] text-stone-500">再対局待ち...</div>
+                 )}
+
+                 <button onClick={requestReset} className="bg-red-900/30 text-red-300 px-3 py-1 rounded text-xs hover:bg-red-900/50">
+                   リセット
+                 </button>
                </>
              )}
            </div>
