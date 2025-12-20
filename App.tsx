@@ -14,7 +14,6 @@ const EMPTY_HAND = {
   [PieceType.PromotedSilver]: 0, [PieceType.Horse]: 0, [PieceType.Dragon]: 0,
 };
 
-// 環境変数からバックエンドのURLを取得（なければローカル）
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
 const socket: Socket = io(BACKEND_URL, {
@@ -143,6 +142,11 @@ const App: React.FC = () => {
   const [isLocalMode, setIsLocalMode] = useState(false);
   const isLocalModeRef = useRef(false);
 
+  const lastServerTimeData = useRef<{ times: {sente: number, gote: number}, byoyomi: {sente: number, gote: number}, receivedAt: number } | null>(null);
+  
+  // ★追加: 音連打防止用のRef
+  const lastSoundTime = useRef<number | null>(null);
+
   const isProcessingMove = useRef(false);
 
   useEffect(() => {
@@ -190,13 +194,67 @@ const App: React.FC = () => {
     }
   }, [gameStatus, myRole]);
 
+  // クライアント側タイマー (0.1秒更新)
   useEffect(() => {
     if (gameStatus !== 'playing') return;
+
+    const interval = setInterval(() => {
+      if (!lastServerTimeData.current) return;
+
+      const now = Date.now();
+      const elapsedSec = (now - lastServerTimeData.current.receivedAt) / 1000;
+      
+      const serverTimes = lastServerTimeData.current.times;
+      const serverByoyomi = lastServerTimeData.current.byoyomi;
+      
+      const currentPlayer = displayTurn;
+      let newTime = serverTimes[currentPlayer];
+      let newByoyomi = serverByoyomi[currentPlayer];
+
+      if (newTime > 0) {
+        newTime = Math.max(0, Math.ceil(serverTimes[currentPlayer] - elapsedSec));
+      } else {
+        if (newByoyomi > 0) {
+           newByoyomi = Math.max(0, Math.ceil(serverByoyomi[currentPlayer] - elapsedSec));
+        }
+      }
+
+      setTimes(prev => ({
+        ...prev,
+        [currentPlayer]: newTime,
+        [currentPlayer === 'sente' ? 'gote' : 'sente']: serverTimes[currentPlayer === 'sente' ? 'gote' : 'sente']
+      }));
+
+      setByoyomi(prev => ({
+        ...prev,
+        [currentPlayer]: newByoyomi,
+        [currentPlayer === 'sente' ? 'gote' : 'sente']: serverByoyomi[currentPlayer === 'sente' ? 'gote' : 'sente']
+      }));
+
+    }, 100); 
+
+    return () => clearInterval(interval);
+  }, [gameStatus, displayTurn]);
+
+  // ★修正: アラート音の連打防止
+  useEffect(() => {
+    if (gameStatus !== 'playing') {
+        lastSoundTime.current = null;
+        return;
+    }
     const currentP = displayTurn; 
     const isByoyomi = times[currentP] === 0;
     const val = isByoyomi ? byoyomi[currentP] : times[currentP];
+
+    // 秒読み中、かつ10秒以下、かつ値が変わったときのみ鳴らす
     if (isByoyomi && val <= 10 && val > 0) {
-      playSound('alert');
+      if (lastSoundTime.current !== val) {
+        playSound('alert');
+        lastSoundTime.current = val;
+      }
+    } else {
+        // 条件から外れたらリセット
+        lastSoundTime.current = null;
     }
   }, [times, byoyomi, gameStatus, displayTurn]);
 
@@ -228,16 +286,23 @@ const App: React.FC = () => {
       setRematchRequests(data.rematchRequests || {sente: false, gote: false});
       setViewIndex(data.history.length);
       if (data.settings) setSettings(data.settings);
-      if (data.times) setTimes(data.times);
+      if (data.times) {
+         setTimes(data.times);
+         lastServerTimeData.current = { times: data.times, byoyomi: {sente:30, gote:30}, receivedAt: Date.now() };
+      }
       if (data.yourRole) setMyRole(data.yourRole as Role);
     });
 
     socket.on("settings_updated", (newSettings: TimeSettings) => setSettings(newSettings));
     socket.on("ready_status", (ready: {sente: boolean, gote: boolean}) => setReadyStatus(ready));
     socket.on("rematch_status", (req: {sente: boolean, gote: boolean}) => setRematchRequests(req));
+    
     socket.on("time_update", (data: { times: any, currentByoyomi: any }) => {
-      setTimes(data.times);
-      setByoyomi(data.currentByoyomi);
+      lastServerTimeData.current = {
+        times: data.times,
+        byoyomi: data.currentByoyomi,
+        receivedAt: Date.now()
+      };
     });
 
     socket.on("game_started", () => {
@@ -277,6 +342,8 @@ const App: React.FC = () => {
       if (isLocalModeRef.current) return;
 
       isProcessingMove.current = false;
+      
+      lastServerTimeData.current = null; 
 
       setHistory(prev => {
         const last = prev[prev.length - 1];
@@ -513,7 +580,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
         <form onSubmit={handleJoin} className="bg-stone-800 p-8 rounded-lg shadow-xl border border-amber-700/30 max-w-sm w-full space-y-4">
-          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">Shogistack</h1>
+          <h1 className="text-2xl font-bold text-amber-100 text-center font-serif">ShogiStack</h1>
           <div>
             <label className="block text-stone-400 text-sm mb-2">ルーム名</label>
             <input 
@@ -539,7 +606,6 @@ const App: React.FC = () => {
   const getRoleName = (r: Role) => r === 'sente' ? '先手' : r === 'gote' ? '後手' : '観戦';
 
   return (
-    // ★修正: touch-noneを削除し、レイアウト調整
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
         
@@ -639,7 +705,7 @@ const App: React.FC = () => {
                       : 'bg-stone-700 text-stone-300 hover:bg-stone-600 border border-stone-600'}
                   `}
                 >
-                  {isLocalMode ? "同期に戻る" : "ローカル検討"}
+                  {isLocalMode ? "同期に戻る " : "ローカル検討"}
                 </button>
               )}
             </div>
