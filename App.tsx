@@ -84,12 +84,11 @@ const playSound = (type: 'move' | 'alert' | 'timeout') => {
 type GameStatus = 'waiting' | 'playing' | 'finished' | 'analysis';
 type Role = 'sente' | 'gote' | 'audience';
 
-// ★修正: 設定項目の型を追加
 interface TimeSettings {
   initial: number;
   byoyomi: number;
-  randomTurn: boolean; // 振り駒(ランダム)
-  fixTurn: boolean;    // 再対局で固定
+  randomTurn: boolean;
+  fixTurn: boolean;
 }
 
 const formatTime = (seconds: number) => {
@@ -344,6 +343,21 @@ const App: React.FC = () => {
       setChatMessages(prev => [...prev, msg]);
     });
 
+    // ★追加: 接続エラー系のデバッグ表示
+    const addSystemMessage = (text: string) => {
+        setChatMessages(prev => [...prev, {
+            id: Math.random().toString(),
+            text: `[DEBUG] ${text}`,
+            role: 'system',
+            timestamp: Date.now()
+        }]);
+    };
+
+    socket.on("connect_error", (err) => addSystemMessage(`接続エラー: ${err.message}`));
+    socket.on("disconnect", (reason) => addSystemMessage(`切断されました: ${reason}`));
+    socket.on("reconnect_attempt", () => addSystemMessage("再接続を試みています..."));
+    socket.on("reconnect", () => addSystemMessage("再接続しました"));
+
     return () => {
       socket.off("sync");
       socket.off("player_names_updated");
@@ -355,6 +369,11 @@ const App: React.FC = () => {
       socket.off("game_finished");
       socket.off("move");
       socket.off("receive_message");
+      // ★追加: イベントリスナーの解除
+      socket.off("connect_error");
+      socket.off("disconnect");
+      socket.off("reconnect_attempt");
+      socket.off("reconnect");
       socket.disconnect();
     };
   }, [joined, roomId, userId]); 
@@ -363,7 +382,6 @@ const App: React.FC = () => {
     e.preventDefault();
     if (roomId.trim()) setJoined(true);
   };
-  // ★修正: boolean型の設定値にも対応
   const updateSettings = (key: keyof TimeSettings, value: number | boolean) => {
     const newSettings = { ...settings, [key]: value };
     socket.emit("update_settings", { roomId, settings: newSettings });
@@ -438,8 +456,9 @@ const App: React.FC = () => {
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
   
+  // ★修正: userId も送信
   const handleSendMessage = (text: string) => {
-    socket.emit("send_message", { roomId, message: text, role: myRole, userName });
+    socket.emit("send_message", { roomId, message: text, role: myRole, userName, userId });
   };
 
   const handleSquareClick = (coords: Coordinates) => {
@@ -631,7 +650,6 @@ const App: React.FC = () => {
                       <label className="text-xs text-stone-400 flex justify-between"><span>秒読み</span><span className="text-amber-400 font-mono">{settings.byoyomi}秒</span></label>
                       <input type="range" min="0" max="60" step="10" value={settings.byoyomi} onChange={(e) => updateSettings('byoyomi', Number(e.target.value))} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"/>
                     </div>
-                    {/* ★追加: 振り駒・手番固定の設定 */}
                     <div className="flex items-center justify-between">
                        <label className="text-xs text-stone-400">振り駒 (ランダム)</label>
                        <input type="checkbox" checked={settings.randomTurn} onChange={(e) => updateSettings('randomTurn', e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer"/>
@@ -718,7 +736,8 @@ const App: React.FC = () => {
 
       {/* --- 右側 (チャットエリア) --- */}
       <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
-        <Chat messages={chatMessages} onSendMessage={handleSendMessage} myRole={myRole} />
+        {/* ★修正: userId を渡す */}
+        <Chat messages={chatMessages} onSendMessage={handleSendMessage} myRole={myRole} userId={userId} />
       </div>
 
     </div>

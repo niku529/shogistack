@@ -1,19 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// メッセージ型定義に userName を追加
 interface ChatProps {
-  messages: { id: string, text: string, role: string, userName?: string, timestamp: number }[]; 
+  // ★修正: userId を追加
+  messages: { id: string, text: string, role: string, userName?: string, userId?: string, timestamp: number }[]; 
   onSendMessage: (text: string) => void;
   myRole: string;
+  userId: string; // 自分のID
 }
 
-const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole }) => {
+const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole, userId }) => {
   const [input, setInput] = useState("");
-  // ★変更: コンテナ全体のrefに変更
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // ★変更: scrollIntoView をやめ、scrollTop を操作する方式に変更
-  // これにより、画面全体がガクッと動くのを防ぎます
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -40,23 +38,25 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole }) => {
         チャット
       </div>
       
-      {/* ★変更: refをここに設定 */}
       <div ref={containerRef} className="flex-1 overflow-y-auto p-2 space-y-2">
         {messages.map((msg) => {
-            const isMe = msg.role === myRole;
             const isSystem = msg.role === 'system';
+            // ★修正: メッセージが自分かどうかを userId で判定 (後方互換で role も一応チェック)
+            const isMe = msg.userId ? msg.userId === userId : msg.role === myRole;
+            
+            // デバッグメッセージ（エラーなど）の場合は赤字で表示
+            const isDebug = msg.text.startsWith('[DEBUG]');
 
             if (isSystem) {
                 return (
-                    <div key={msg.id} className="text-center text-xs text-stone-500 py-1 opacity-70">
-                        -- {msg.text} --
+                    <div key={msg.id} className={`text-center text-xs py-1 opacity-70 ${isDebug ? 'text-red-400 font-bold' : 'text-stone-500'}`}>
+                        {msg.text}
                     </div>
                 );
             }
 
             return (
               <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                {/* ★変更: roleだけでなく、userNameを表示 */}
                 <div className={`text-[10px] mb-0.5 flex gap-1 ${isMe ? 'text-stone-400' : 'text-stone-500'}`}>
                    <span className="font-bold">{msg.userName || "不明"}</span>
                    <span>({getRoleLabel(msg.role)})</span>
