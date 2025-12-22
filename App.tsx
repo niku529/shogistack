@@ -17,7 +17,7 @@ const EMPTY_HAND = {
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
 const socket: Socket = io(BACKEND_URL, {
-  transports: ['websocket', 'polling'],
+  transports: ['websocket', 'polling'], 
   autoConnect: false,
   reconnection: true,
   reconnectionAttempts: Infinity,
@@ -118,6 +118,7 @@ const App: React.FC = () => {
   const [joined, setJoined] = useState(false);
   const [myRole, setMyRole] = useState<Role>('audience');
   const [playerNames, setPlayerNames] = useState<{sente: string | null, gote: string | null}>({sente: null, gote: null});
+  const [connectionStatus, setConnectionStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [userCounts, setUserCounts] = useState<{global: number, room: number}>({ global: 0, room: 0 });
   const [readyStatus, setReadyStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   const [rematchRequests, setRematchRequests] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
@@ -183,11 +184,14 @@ const App: React.FC = () => {
     updateDisplay(history, viewIndex);
   }, [history, viewIndex, updateDisplay]);
 
+  // ★修正: 役割が決まったら（後手なら）自動反転
   useEffect(() => {
-    if (gameStatus === 'playing') {
-      setIsFlipped(myRole === 'gote');
+    if (myRole === 'gote') {
+      setIsFlipped(true);
+    } else if (myRole === 'sente') {
+      setIsFlipped(false);
     }
-  }, [gameStatus, myRole]);
+  }, [myRole]);
 
   useEffect(() => {
     if (gameStatus !== 'playing') return;
@@ -253,12 +257,10 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // ★修正: 入室前でも userId があれば接続する
     if (!userId) return;
 
     socket.connect();
     
-    // 再接続時などの処理
     const handleConnect = () => {
         if (joined) {
             socket.emit("join_room", { 
@@ -271,8 +273,6 @@ const App: React.FC = () => {
     };
 
     socket.on("connect", handleConnect);
-
-    // ★追加: グローバルな人数更新は常時リッスン
     socket.on("update_global_count", (count: number) => setUserCounts(prev => ({ ...prev, global: count })));
 
     if (joined) {
@@ -316,8 +316,11 @@ const App: React.FC = () => {
           };
         });
 
-        // ルーム人数は入室中のみ
         socket.on("update_room_count", (count: number) => setUserCounts(prev => ({ ...prev, room: count })));
+        
+        socket.on("connection_status_update", (status: {sente: boolean, gote: boolean}) => {
+            setConnectionStatus(status);
+        });
 
         socket.on("game_started", () => {
           isProcessingMove.current = false;
@@ -397,6 +400,7 @@ const App: React.FC = () => {
       socket.off("time_update");
       socket.off("update_global_count");
       socket.off("update_room_count");
+      socket.off("connection_status_update");
       socket.off("game_started");
       socket.off("game_finished");
       socket.off("move");
@@ -405,8 +409,6 @@ const App: React.FC = () => {
       socket.off("disconnect");
       socket.off("reconnect_attempt");
       socket.off("reconnect");
-      // 依存配列が変わったとき(入室時)は disconnect しない (接続維持)
-      // ただしコンポーネントのアンマウント時は切りたいが、Appはルートなので基本アンマウントされない
     };
   }, [joined, roomId, userId]); 
 
@@ -568,15 +570,49 @@ const App: React.FC = () => {
     const name = playerNames[owner] || (owner === 'sente' ? "先手" : "後手");
     const label = owner === 'sente' ? '☗ 先手' : '☖ 後手';
 
+    const isWinner = winner === owner;
+    const isOnline = connectionStatus[owner];
+    const isMe = myRole === owner;
+
+    // ★修正: 色のロジック
+    // 1. 勝者は常に金色のまま
+    // 2. 手番なら明るく
+    // 3. それ以外は暗く
+    let bgClass = "";
+    if (isWinner) {
+        bgClass = "bg-yellow-600 border-yellow-400 shadow-[0_0_15px_rgba(234,179,8,0.6)]";
+    } else if (isTurn) {
+        bgClass = "bg-stone-800 border-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.3)]";
+    } else {
+        bgClass = "bg-stone-900 border-stone-800 opacity-60";
+    }
+
+    // 離席していても、勝者の金色は残す（グレースケールにしない）
+    // その代わり、少し透明度を下げて「いない感」を出す
+    if (playerNames[owner] && !isOnline) {
+        bgClass += " opacity-50"; 
+    }
+
     return (
       <div className={`
-        flex flex-col items-end px-3 py-1 rounded border-b-4 transition-colors min-w-[100px]
-        ${isTurn ? 'bg-stone-800 border-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-stone-900 border-stone-800 opacity-60'}
+        flex flex-col items-end px-3 py-1 rounded border-b-4 transition-all duration-500 min-w-[100px] relative
+        ${bgClass}
       `}>
-        <div className="flex flex-col items-end mb-1">
-            <span className="text-sm text-stone-200 font-bold truncate max-w-[120px]">
-                {name}
-            </span>
+        {/* 離席中バッジ (赤色を強調) */}
+        {playerNames[owner] && !isOnline && (
+            <div className="absolute -top-2 left-0 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded shadow-md font-bold z-10 animate-pulse">
+                離席中
+            </div>
+        )}
+
+        <div className="flex flex-col items-end mb-1 w-full">
+            <div className="flex items-center gap-1">
+                {/* ★追加: 自分バッジ */}
+                {isMe && <span className="text-[10px] bg-amber-700 text-amber-100 px-1 rounded">あなた</span>}
+                <span className="text-sm text-stone-200 font-bold truncate max-w-[100px]">
+                    {name}
+                </span>
+            </div>
             <span className="text-[10px] text-stone-500 font-mono">
                 {label}
             </span>
@@ -600,9 +636,8 @@ const App: React.FC = () => {
         <form onSubmit={handleJoin} className="bg-stone-800 p-8 rounded-lg shadow-xl border border-amber-700/30 max-w-sm w-full space-y-4">
           <div className="text-center">
             <h1 className="text-2xl font-bold text-amber-100 font-serif">ShogiStack</h1>
-            {/* ★追加: ログイン画面での全体人数表示 */}
             <div className="text-xs text-stone-500 mt-1 font-mono">
-                 🟢オンライン：<span className="text-green-400 font-bold">{userCounts.global}</span> 
+                🟢 現在 <span className="text-green-400 font-bold">{userCounts.global}</span> 人がオンライン
             </div>
           </div>
           <div>
@@ -645,10 +680,9 @@ const App: React.FC = () => {
         <div className="w-full max-w-lg flex justify-between items-center text-stone-400 text-sm px-1 mb-1">
           <div>Room: <span className="text-amber-200 font-mono">{roomId}</span></div>
           
-          {/* ★追加: ルーム内の人数表示 (観戦者数は単純計算で概算) */}
           <div className="text-xs text-stone-500 font-mono flex gap-2">
              <span title="現在の部屋にいる人数">
-                入室中 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span>
+                👤 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span>
              </span>
           </div>
 

@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 interface ChatProps {
-  // ★修正: userId を追加
   messages: { id: string, text: string, role: string, userName?: string, userId?: string, timestamp: number }[]; 
   onSendMessage: (text: string) => void;
   myRole: string;
-  userId: string; // 自分のID
+  userId: string;
 }
 
 const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole, userId }) => {
@@ -29,6 +28,7 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole, userId }) 
   const getRoleLabel = (r: string) => {
       if (r === 'sente') return '先手';
       if (r === 'gote') return '後手';
+      if (r === 'log') return '記録係'; // ログさんの肩書き
       return '観戦';
   };
   
@@ -38,21 +38,30 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole, userId }) 
         チャット
       </div>
       
-      <div ref={containerRef} className="flex-1 overflow-y-auto p-2 space-y-2">
+      <div ref={containerRef} className="flex-1 overflow-y-auto p-2 space-y-3">
         {messages.map((msg) => {
             const isSystem = msg.role === 'system';
-            // ★修正: メッセージが自分かどうかを userId で判定 (後方互換で role も一応チェック)
             const isMe = msg.userId ? msg.userId === userId : msg.role === myRole;
-            
-            // デバッグメッセージ（エラーなど）の場合は赤字で表示
             const isDebug = msg.text.startsWith('[DEBUG]');
 
+            // ★修正: 入室ログ等のシステムメッセージを明るく (opacity-70 -> text-stone-400)
             if (isSystem) {
                 return (
-                    <div key={msg.id} className={`text-center text-xs py-1 opacity-70 ${isDebug ? 'text-red-400 font-bold' : 'text-stone-500'}`}>
+                    <div key={msg.id} className={`text-center text-xs py-1 ${isDebug ? 'text-red-400 font-bold' : 'text-stone-400'}`}>
                         {msg.text}
                     </div>
                 );
+            }
+
+            // 吹き出しの色分け
+            let bubbleClass = "bg-stone-800 text-stone-300 border border-stone-700"; // デフォルト（観戦者）
+            if (msg.role === 'sente') {
+                bubbleClass = "bg-amber-100 text-stone-900 border border-amber-200";
+            } else if (msg.role === 'gote') {
+                bubbleClass = "bg-stone-700 text-stone-100 border border-stone-600";
+            } else if (msg.role === 'log') {
+                // ★追加: ログさん用のスタイル（渋いグレー、少し強調）
+                bubbleClass = "bg-stone-600 text-stone-200 border border-stone-500 font-mono text-xs";
             }
 
             return (
@@ -62,11 +71,8 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, myRole, userId }) 
                    <span>({getRoleLabel(msg.role)})</span>
                 </div>
                 
-                <div className={`px-3 py-2 rounded max-w-[90%] text-sm break-words shadow-sm ${
-                    msg.role === 'sente' ? 'bg-amber-100 text-stone-900 border border-amber-200' :
-                    msg.role === 'gote' ? 'bg-stone-700 text-stone-100 border border-stone-600' :
-                    'bg-stone-800 text-stone-300 border border-stone-700'
-                }`}>
+                {/* ★修正: whitespace-pre-wrap で改行を有効化 */}
+                <div className={`px-3 py-2 rounded max-w-[95%] text-sm break-words shadow-sm whitespace-pre-wrap ${bubbleClass}`}>
                   {msg.text}
                 </div>
               </div>
