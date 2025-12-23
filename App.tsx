@@ -4,9 +4,10 @@ import Komadai from './components/Komadai';
 import Chat from './components/Chat';
 import { BoardState, Coordinates, Hand, Move, PieceType, Player } from './types';
 import { createInitialBoard, isValidMove, applyMove, exportKIF } from './utils/shogiUtils';
-import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE } from './constants';
 import { playSound } from './utils/soundUtils';
+import { getPromotionStatus } from './utils/promotionUtils'; // ★追加: 昇格判定ロジック
 import { useGameSocket } from './hooks/useGameSocket';
+import { useMoveLogic } from './hooks/useMoveLogic';
 
 const EMPTY_HAND = {
   [PieceType.Pawn]: 0, [PieceType.Lance]: 0, [PieceType.Knight]: 0, [PieceType.Silver]: 0,
@@ -41,16 +42,28 @@ const App: React.FC = () => {
   const [selectedHandPiece, setSelectedHandPiece] = useState<PieceType | null>(null);
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
   const [isLocalMode, setIsLocalModeState] = useState(false);
-  const isProcessingMove = useRef(false);
   const lastSoundTime = useRef<number | null>(null);
 
-  // フックから通信機能と状態を取得
+  // 1. データ層 (Socket)
   const {
     gameStatus, history, setHistory, myRole, playerNames, winner, readyStatus, rematchRequests,
     settings, times, setTimes, byoyomi, setByoyomi, chatMessages, userCounts, connectionStatus,
-    lastServerTimeData, isLocalModeRef,
-    updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestUndoForce, requestReset, requestRematch, sendMessage, setIsLocalMode
+    lastServerTimeData, gameEndReason, // ★追加: gameEndReasonを受け取る
+    updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestReset, requestRematch, sendMessage, setIsLocalMode
   } = useGameSocket(roomId, userId, userName, isAnalysisRoom, joined);
+
+  // 2. ロジック層 (Move)
+  const { processMove } = useMoveLogic({
+    gameStatus,
+    myRole,
+    displayTurn,
+    viewIndex,
+    history,
+    isLocalMode,
+    sendMove,
+    setHistory,
+    setViewIndex,
+  });
 
   useEffect(() => {
     let storedId = localStorage.getItem('shogi_user_id');
@@ -170,93 +183,58 @@ const App: React.FC = () => {
     if (roomId.trim()) setJoined(true);
   };
 
-  const processMoveLogic = (move: Move) => {
-    if (gameStatus === 'playing') {
-      if (myRole !== 'sente' && myRole !== 'gote') return;
-      if (myRole !== displayTurn) return;
-      if (viewIndex !== history.length) {
-        alert("最新の局面に戻ってください");
-        return;
-      }
-    }
-    if (isProcessingMove.current) return;
-
-    if (isLocalMode) {
-       setHistory(prev => {
-          const truncated = prev.slice(0, viewIndex);
-          return [...truncated, move];
-       });
-       setViewIndex(viewIndex + 1);
-       playSound('move');
-       return;
-    }
-
-    isProcessingMove.current = true;
-    const isReview = gameStatus === 'finished' || gameStatus === 'analysis';
-    sendMove(move, viewIndex, isReview);
-
-    if (isReview && viewIndex < history.length) {
-       setHistory(prev => {
-          const truncated = prev.slice(0, viewIndex);
-          return [...truncated, move];
-       });
-    } else {
-       setHistory(prev => [...prev, move]);
-    }
-    
-    setTimeout(() => { isProcessingMove.current = false; }, 500);
-    setViewIndex(viewIndex + 1);
-    playSound('move');
-  };
-
   const handleSquareClick = (coords: Coordinates) => {
     if (gameStatus === 'waiting') return;
     const clickedPiece = displayBoard[coords.y][coords.x];
+    
+    // 自分の駒をクリック
     if (clickedPiece?.owner === displayTurn) {
       setSelectedSquare(coords);
       setSelectedHandPiece(null);
       return;
     }
+
+    // 移動先の選択
     if (selectedSquare) {
       const piece = displayBoard[selectedSquare.y][selectedSquare.x];
       if (!piece) return;
-      let mustPromote = false;
-      if (displayTurn === 'sente') {
-        if ((piece.type === PieceType.Pawn || piece.type === PieceType.Lance) && coords.y === 0) mustPromote = true;
-        if (piece.type === PieceType.Knight && coords.y <= 1) mustPromote = true;
-      } else {
-        if ((piece.type === PieceType.Pawn || piece.type === PieceType.Lance) && coords.y === 8) mustPromote = true;
-        if (piece.type === PieceType.Knight && coords.y >= 7) mustPromote = true;
-      }
+
+      // ★修正: 昇格判定を utils に委譲してスッキリ！
+      const status = getPromotionStatus(piece.type, selectedSquare.y, coords.y, displayTurn);
+
       const baseMove: Move = { 
-        from: selectedSquare, to: coords, piece: piece.type, drop: false, isPromoted: mustPromote ? true : false 
+        from: selectedSquare, to: coords, piece: piece.type, drop: false, isPromoted: false 
       };
+
+      // 移動ルールチェック
       if (!isValidMove(displayBoard, displayTurn, baseMove)) return; 
-      const isEnteringZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(coords.y);
-      const isLeavingZone = (displayTurn === 'sente' ? SENTE_PROMOTION_ZONE : GOTE_PROMOTION_ZONE).includes(selectedSquare.y);
-      const canPromote = !piece.isPromoted && (isEnteringZone || isLeavingZone) && 
-                         piece.type !== PieceType.Gold && piece.type !== PieceType.King;
-      if (mustPromote) {
-        processMoveLogic({ ...baseMove, isPromoted: true });
+
+      // 判定結果に応じた処理
+      if (status === 'must') {
+        processMove({ ...baseMove, isPromoted: true });
         setSelectedSquare(null);
         return;
       }
-      if (canPromote) {
+      if (status === 'can') {
         setPromotionCandidate({ move: { ...baseMove, isPromoted: false } });
         setSelectedSquare(null);
         return;
       }
-      processMoveLogic(baseMove);
+      
+      // 通常移動
+      processMove(baseMove);
       setSelectedSquare(null);
       return;
     }
+
+    // 持ち駒を打つ
     if (selectedHandPiece) {
       if (clickedPiece === null) {
         const move: Move = { 
           from: 'hand', to: coords, piece: selectedHandPiece, drop: true, isPromoted: false 
         };
         if (isValidMove(displayBoard, displayTurn, move)) {
-          processMoveLogic(move);
+          processMove(move);
         }
         setSelectedHandPiece(null);
       }
@@ -272,12 +250,23 @@ const App: React.FC = () => {
 
   const handlePromotionChoice = (promote: boolean) => {
     if (!promotionCandidate) return;
-    processMoveLogic({ ...promotionCandidate.move, isPromoted: promote });
+    processMove({ ...promotionCandidate.move, isPromoted: promote });
     setPromotionCandidate(null);
   };
 
+
   const copyKIF = () => {
-    const kif = exportKIF(history, createInitialBoard());
+    const kif = exportKIF(
+        history, 
+        createInitialBoard(),
+        playerNames.sente || "先手",
+        playerNames.gote || "後手",
+        winner,
+        gameEndReason,
+        settings, 
+        times,
+        byoyomi // ★追加: 秒読み情報も渡す
+    );
     navigator.clipboard.writeText(kif).then(() => alert("KIFをコピーしました"));
   };
 
@@ -398,13 +387,11 @@ const App: React.FC = () => {
         {/* --- Bottom Area (自分) --- */}
         <div className="w-full max-w-lg flex items-start justify-between mt-1 gap-2">
           <div className="flex-1 min-w-0"><Komadai hand={BottomHand} owner={BottomOwner} isCurrentTurn={displayTurn === BottomOwner} onSelectPiece={(p) => handleHandPieceClick(p, BottomOwner)} selectedPiece={displayTurn === BottomOwner ? selectedHandPiece : null} /></div>
-          {/* ★修正: タイマー表示を flex-shrink-0 で確保 */}
           <div className="flex-shrink-0">{renderTimer(BottomOwner)}</div>
         </div>
 
         {/* --- Footer (Controls) --- */}
         <div className="w-full max-w-lg flex flex-col gap-2 mt-2">
-          {/* ★修正: 対局中は操作パネルを隠す (元の仕様に戻す) */}
           {gameStatus !== 'playing' ? (
             <div className="flex flex-col gap-2 bg-stone-900/50 p-2 rounded border border-stone-800">
               <div className="flex items-center justify-between">

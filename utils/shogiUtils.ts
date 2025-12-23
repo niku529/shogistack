@@ -1,7 +1,8 @@
 import { BoardState, Coordinates, Hand, Move, PieceType, Player, Piece } from '../types';
 import { PIECE_KANJI } from '../constants';
+import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE } from '../constants';
 
-const createInitialBoard = (): BoardState => {
+export const createInitialBoard = (): BoardState => {
   const board: BoardState = Array(9).fill(null).map(() => Array(9).fill(null));
   
   const place = (x: number, y: number, type: PieceType, owner: Player) => {
@@ -105,7 +106,7 @@ const canPieceMoveTo = (board: BoardState, from: Coordinates, to: Coordinates, p
   }
 };
 
-const applyMove = (currentBoard: BoardState, currentHands: { sente: Hand; gote: Hand }, move: Move, currentTurn: Player) => {
+export const applyMove = (currentBoard: BoardState, currentHands: { sente: Hand; gote: Hand }, move: Move, currentTurn: Player) => {
   const newBoard = currentBoard.map(row => row.map(p => p ? { ...p } : null));
   const newHands = { 
     sente: { ...currentHands.sente }, 
@@ -164,7 +165,7 @@ const isKingInCheck = (board: BoardState, targetTurn: Player) => {
   return false;
 };
 
-const isValidMove = (board: BoardState, currentTurn: Player, move: Move): boolean => {
+export const isValidMove = (board: BoardState, currentTurn: Player, move: Move): boolean => {
   const { from, to, piece, drop, isPromoted } = move;
 
   if (to.x < 0 || to.x > 8 || to.y < 0 || to.y > 8) return false;
@@ -210,20 +211,10 @@ const isValidMove = (board: BoardState, currentTurn: Player, move: Move): boolea
   return true;
 };
 
-const toZenkaku = (n: number) => {
-  const map = ['０', '１', '２', '３', '４', '５', '６', '７', '８', '９'];
-  return String(n).split('').map(c => map[Number(c)]).join('');
-};
-
-const toKanjiNum = (n: number) => {
-  const map = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
-  return map[n];
-};
-
 const formatKifTime = (seconds: number) => {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m.toString().padStart(2, ' ')}:${s.toString().padStart(2, '0')}`;
 };
 
 const formatKifTotalTime = (seconds: number) => {
@@ -233,74 +224,146 @@ const formatKifTotalTime = (seconds: number) => {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 };
 
-// ★修正: KIF形式のエクスポート (分岐対応)
-const exportKIF = (history: Move[], initialBoard: BoardState, branch?: { start: number, moves: Move[] } | null) => {
-  const now = new Date();
-  let kif = `#KIF version=2.0 encoding=UTF-8\n`;
-  kif += `開始日時：${now.getFullYear()}/${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${now.getMinutes()}\n`;
-  kif += `手合割：平手\n`;
-  kif += `先手：\n`;
-  kif += `後手：\n`;
-  kif += `手数----指手---------消費時間--\n`;
+export const exportKIF = (
+  history: Move[],
+  initialBoard: BoardState,
+  senteName?: string,
+  goteName?: string,
+  winner?: Player | null,
+  endReason?: string | null,
+  timeSettings?: { initial: number, byoyomi: number },
+  remainingTimes?: { sente: number, gote: number },
+  remainingByoyomi?: { sente: number, gote: number }
+): string => {
+  const header = `
+手合割：平手
+先手：${senteName || '不明'}
+後手：${goteName || '不明'}
+手数----指手---------消費時間--
+`.trim();
 
-  const generateMoveLines = (moves: Move[], offset: number = 0) => {
-    let lines = "";
-    moves.forEach((move, i) => {
-      const index = offset + i + 1;
-      const toX = 9 - move.to.x; 
-      const toY = toKanjiNum(move.to.y + 1);
-      
-      let moveStr = "";
-      // 直前の手を取得（offsetがある場合はhistoryから参照する等の考慮が必要だが、簡易的に同判定はbranch内では省略または直前チェックのみにする）
-      // ここではbranch内でも同チェックを行う簡易実装
-      const prevMove = i > 0 ? moves[i - 1] : (offset > 0 ? history[offset - 1] : null);
-      const isSamePos = prevMove && prevMove.to.x === move.to.x && prevMove.to.y === move.to.y;
+  let body = "";
 
-      if (isSamePos) {
-        moveStr += "同　";
-      } else {
-        moveStr += `${toZenkaku(toX)}${toY}`;
-      }
+  history.forEach((move, index) => {
+    const num = index + 1;
+    const paddedNum = num.toString().padStart(4, ' ');
+    
+    const toX = ['１','２','３','４','５','６','７','８','９'][9 - (move.to.x + 1)];
+    const toY = ['一','二','三','四','五','六','七','八','九'][move.to.y];
+    
+    let pieceName = "";
+    switch(move.piece) {
+      case PieceType.Pawn: pieceName = "歩"; break;
+      case PieceType.Lance: pieceName = "香"; break;
+      case PieceType.Knight: pieceName = "桂"; break;
+      case PieceType.Silver: pieceName = "銀"; break;
+      case PieceType.Gold: pieceName = "金"; break;
+      case PieceType.Bishop: pieceName = "角"; break;
+      case PieceType.Rook: pieceName = "飛"; break;
+      case PieceType.King: pieceName = "玉"; break;
+      case PieceType.PromotedPawn: pieceName = "と"; break;
+      case PieceType.PromotedLance: pieceName = "成香"; break;
+      case PieceType.PromotedKnight: pieceName = "成桂"; break;
+      case PieceType.PromotedSilver: pieceName = "成銀"; break;
+      case PieceType.Horse: pieceName = "馬"; break;
+      case PieceType.Dragon: pieceName = "龍"; break;
+    }
 
-      const pieceName = PIECE_KANJI[move.piece];
-      moveStr += pieceName;
+    let moveStr = "";
+    const prevMove = index > 0 ? history[index - 1] : null;
+    
+    if (prevMove && prevMove.to.x === move.to.x && prevMove.to.y === move.to.y) {
+      moveStr = "同　" + pieceName;
+    } else {
+      moveStr = `${toX}${toY}${pieceName}`;
+    }
 
-      if (move.drop) {
-        moveStr += "打";
-      } else if (move.isPromoted) {
-        moveStr += "成";
-      }
+    if (move.drop) {
+      moveStr += "打";
+    } else if (move.isPromoted) {
+      moveStr += "成";
+    }
 
-      if (!move.drop) {
-         const from = move.from as Coordinates;
-         moveStr += `(${9 - from.x}${from.y + 1})`;
-      }
+    let fromStr = "";
+    if (move.drop) {
+       // 打
+    } else {
+        if (typeof move.from !== 'string') {
+            const fromX = 9 - move.from.x;
+            const fromY = move.from.y + 1;
+            fromStr = `(${fromX}${fromY})`;
+        }
+    }
 
-      // スペース調整 (簡易)
-      while (moveStr.length < 10) moveStr += "　";
+    const nowTime = move.time ? move.time.now : 0;
+    const totalTime = move.time ? move.time.total : 0;
+    
+    const timeStr = `( ${formatKifTime(nowTime)}/${formatKifTotalTime(totalTime)})`;
+    const moveContent = moveStr + fromStr;
+    body += `${paddedNum} ${moveContent.padEnd(16, ' ')} ${timeStr}\n`;
+  });
 
-      let timeStr = "";
-      if (move.time) {
-          timeStr = `( ${formatKifTime(move.time.now)}/${formatKifTotalTime(move.time.total)})`;
-      } else {
-          timeStr = `( 0:00/00:00:00)`; // 時間データがない場合
-      }
+  if (endReason) {
+    const lastNum = (history.length + 1).toString().padStart(4, ' ');
+    let endStr = "";
+    let timeStr = "( 0:00/00:00:00)"; 
 
-      lines += `${String(index).padStart(4, ' ')} ${moveStr} ${timeStr}\n`;
-    });
-    return lines;
-  };
+    // ★修正: 投了(resign) と 切れ負け(timeout) 両方で計算を行う
+    if (endReason === 'resign' || endReason === 'timeout') {
+        endStr = endReason === 'resign' ? "投了" : "切れ負け";
+        
+        if (winner && timeSettings && remainingTimes && remainingByoyomi) {
+            const loser = winner === 'sente' ? 'gote' : 'sente';
+            
+            let loserPrevTotal = 0;
+            for (let i = history.length - 1; i >= 0; i--) {
+                const m = history[i];
+                const moveOwner = (i % 2 === 0) ? 'sente' : 'gote';
+                if (moveOwner === loser) {
+                    loserPrevTotal = m.time ? m.time.total : 0;
+                    break;
+                }
+            }
 
-  // メイン棋譜
-  kif += generateMoveLines(history);
+            let resignThinkTime = 0;
+            let loserTotalConsumed = 0;
 
-  // 変化棋譜
-  if (branch) {
-    kif += `\n変化：${branch.start + 1}手\n`;
-    kif += generateMoveLines(branch.moves, branch.start);
+            if (remainingTimes[loser] > 0) {
+               // 通常消費
+               loserTotalConsumed = Math.max(0, timeSettings.initial - remainingTimes[loser]);
+               resignThinkTime = Math.max(0, loserTotalConsumed - loserPrevTotal);
+            } else {
+               // 持ち時間切れ後の処理
+               if (timeSettings.byoyomi > 0) {
+                  // 秒読みモード: 秒読み分を加算
+                  const currentByoyomiUsed = Math.max(0, timeSettings.byoyomi - remainingByoyomi[loser]);
+                  loserTotalConsumed = loserPrevTotal + currentByoyomiUsed;
+                  resignThinkTime = currentByoyomiUsed;
+               } else {
+                  // 秒読みなし（切れ負けルール）: 持ち時間を全て使い切ったとみなす
+                  loserTotalConsumed = timeSettings.initial;
+                  resignThinkTime = Math.max(0, loserTotalConsumed - loserPrevTotal);
+               }
+            }
+
+            timeStr = `( ${formatKifTime(resignThinkTime)}/${formatKifTotalTime(loserTotalConsumed)})`;
+        }
+    } else if (endReason === 'sennichite') endStr = "千日手";
+    else if (endReason === 'illegal_sennichite') endStr = "反則負け";
+    else if (endReason === 'try') endStr = "入玉宣言勝ち"; 
+
+    if (endStr) {
+       body += `${lastNum} ${endStr.padEnd(16, ' ')} ${timeStr}\n`;
+    }
   }
 
-  return kif;
-};
+  let resultStr = "";
+  if (winner) {
+     const winName = winner === 'sente' ? '先手' : '後手';
+     resultStr = `まで${history.length}手で${winName}の勝ち`;
+  } else if (endReason === 'sennichite') {
+     resultStr = `まで${history.length}手で千日手`;
+  }
 
-export { createInitialBoard, isValidMove, applyMove, exportKIF };
+  return `${header}\n${body}${resultStr}\n`;
+};

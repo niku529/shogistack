@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Move, Player, BoardState, TimeSettings, GameStatus, Role } from '../types';
+import { Move, Player, TimeSettings, GameStatus, Role } from '../types';
 import { playSound } from '../utils/soundUtils';
 
 // Socketインスタンスはフックの外で定義（シングルトン）
@@ -31,7 +31,7 @@ export const useGameSocket = (
   isAnalysisRoom: boolean,
   joined: boolean
 ) => {
-  // --- State (App.tsxから移動) ---
+  // --- State ---
   const [gameStatus, setGameStatus] = useState<GameStatus>('waiting');
   const [history, setHistory] = useState<Move[]>([]);
   const [myRole, setMyRole] = useState<Role>('audience');
@@ -45,6 +45,9 @@ export const useGameSocket = (
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [userCounts, setUserCounts] = useState<{global: number, room: number}>({ global: 0, room: 0 });
   const [connectionStatus, setConnectionStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
+  
+  // ★追加: 終局理由
+  const [gameEndReason, setGameEndReason] = useState<string | null>(null);
 
   // UI制御のためのRefやコールバック用
   const lastServerTimeData = useRef<{ times: {sente: number, gote: number}, byoyomi: {sente: number, gote: number}, receivedAt: number } | null>(null);
@@ -84,6 +87,12 @@ export const useGameSocket = (
         setWinner(data.winner as Player | null);
         setReadyStatus(data.ready || {sente: false, gote: false});
         setRematchRequests(data.rematchRequests || {sente: false, gote: false});
+        
+        // ★同期時に理由があれば復元（サーバーの実装次第ですが安全のため）
+        if (data.status === 'finished' && data.reason) {
+            setGameEndReason(data.reason);
+        }
+
         if (data.settings) setSettings(data.settings);
         if (data.times) {
            setTimes(data.times);
@@ -110,10 +119,11 @@ export const useGameSocket = (
       socket.on("connection_status_update", setConnectionStatus);
 
       socket.on("game_started", () => {
-        setIsLocalMode(false); // フック内で管理できない部分は外部から制御するか、ここを起点にする
+        setIsLocalMode(false); 
         setHistory([]);
         setGameStatus('playing');
         setWinner(null);
+        setGameEndReason(null); // ★リセット
         setRematchRequests({sente: false, gote: false});
         playSound('alert');
         alert("対局開始！お願いします。");
@@ -122,6 +132,7 @@ export const useGameSocket = (
       socket.on("game_finished", (data: { winner: Player | null, reason?: string }) => {
         setGameStatus('finished');
         setWinner(data.winner);
+        setGameEndReason(data.reason || null); // ★理由を保存
         playSound('timeout');
         let msg = "終局！";
         if (data.reason === 'illegal_sennichite') {
@@ -243,7 +254,7 @@ export const useGameSocket = (
     // State
     gameStatus,
     history,
-    setHistory, // ローカルモードで直接いじるため公開
+    setHistory,
     myRole,
     playerNames,
     winner,
@@ -251,14 +262,15 @@ export const useGameSocket = (
     rematchRequests,
     settings,
     times,
-    setTimes, // タイマー補正用
+    setTimes, 
     byoyomi,
-    setByoyomi, // タイマー補正用
+    setByoyomi, 
     chatMessages,
     userCounts,
     connectionStatus,
-    lastServerTimeData, // タイマー補正用Ref
-    isLocalModeRef,     // ローカルモード判定用Ref
+    lastServerTimeData, 
+    isLocalModeRef,     
+    gameEndReason, // ★追加
 
     // Actions
     updateSettings,
