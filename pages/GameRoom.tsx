@@ -32,20 +32,17 @@ const GameRoom: React.FC = () => {
   const urlName = searchParams.get("name");
   const isAnalysisRoom = searchParams.get("mode") === 'analysis';
 
-  // 名前がURLにある場合は即入室(true)、ない場合は入力待ち(false)
   const [isNameDecided, setIsNameDecided] = useState(!!urlName);
   const [userName, setUserName] = useState(urlName || "");
   const [inputName, setInputName] = useState(""); 
   const [userId, setUserId] = useState<string>("");
 
-  // URLから名前パラメータを消す処理
   useEffect(() => {
     if (urlName) {
       navigate(`/game/${roomId}${isAnalysisRoom ? '?mode=analysis' : ''}`, { replace: true });
     }
   }, [urlName, roomId, isAnalysisRoom, navigate]);
 
-  // UI関連のState
   const [isFlipped, setIsFlipped] = useState(false);
   const [displayBoard, setDisplayBoard] = useState<BoardState>(createInitialBoard());
   const [displayHands, setDisplayHands] = useState<{ sente: Hand; gote: Hand }>({
@@ -60,15 +57,14 @@ const GameRoom: React.FC = () => {
   const [isLocalMode, setIsLocalModeState] = useState(false);
   const lastSoundTime = useRef<number | null>(null);
 
-  // フック呼び出し
+  // フック呼び出し (isConnected, latency を受け取るように修正)
   const {
     gameStatus, history, setHistory, myRole, playerNames, winner, readyStatus, rematchRequests,
     settings, times, setTimes, byoyomi, setByoyomi, chatMessages, userCounts, connectionStatus,
-    lastServerTimeData, gameEndReason,latency,
+    lastServerTimeData, gameEndReason, isConnected, latency, // ★追加
     updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestReset, requestRematch, sendMessage, setIsLocalMode
   } = useGameSocket(roomId, userId, userName, isAnalysisRoom, isNameDecided);
 
-  // ロジック層
   const { processMove } = useMoveLogic({
     gameStatus, myRole, displayTurn, viewIndex, history, isLocalMode, sendMove, setHistory, setViewIndex,
   });
@@ -82,7 +78,6 @@ const GameRoom: React.FC = () => {
     setUserId(storedId);
   }, []);
 
-  // 入室ボタン処理
   const handleDirectJoin = (e: React.FormEvent) => {
     e.preventDefault();
     if (inputName.trim()) {
@@ -91,7 +86,6 @@ const GameRoom: React.FC = () => {
     }
   };
 
-  // 盤面描画の更新
   const updateDisplay = useCallback((moves: Move[], index: number) => {
     let currentBoard = createInitialBoard();
     let currentHands = { sente: { ...EMPTY_HAND }, gote: { ...EMPTY_HAND } };
@@ -128,7 +122,6 @@ const GameRoom: React.FC = () => {
     else if (myRole === 'sente') setIsFlipped(false);
   }, [myRole]);
 
-  // タイマー処理
   useEffect(() => {
     if (gameStatus !== 'playing') return;
     const interval = setInterval(() => {
@@ -163,7 +156,6 @@ const GameRoom: React.FC = () => {
     return () => clearInterval(interval);
   }, [gameStatus, displayTurn, lastServerTimeData, setTimes, setByoyomi]);
 
-  // 秒読み音
   useEffect(() => {
     if (gameStatus !== 'playing') {
         lastSoundTime.current = null;
@@ -201,9 +193,7 @@ const GameRoom: React.FC = () => {
     }
   };
 
-  // ★追加: 招待リンクコピー機能
   const copyRoomLink = () => {
-    // 現在のURL（クエリパラメータは入室時に消えているので安全）をコピー
     const url = window.location.href;
     navigator.clipboard.writeText(url).then(() => {
         alert("招待URLをコピーしました！\n友達に送って対局しよう！");
@@ -364,28 +354,33 @@ const GameRoom: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
-      <div className="flex flex-col items-center w-full max-w-lg shrink-0">
-        <div className="w-full max-w-lg flex justify-between items-center text-stone-400 text-sm px-1 mb-1">
-          {/* ★修正: ヘッダーにコピーボタンを追加 */}
-          <div className="flex items-center gap-2">
-            <span>Room: <span className="text-amber-200 font-mono">{roomId}</span></span>
+      
+      {/* ★追加: 接続中オーバーレイ */}
+      {!isConnected && (
+        <div className="absolute inset-0 z-50 bg-black/80 flex flex-col items-center justify-center text-white backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-amber-500 mb-4"></div>
+          <p className="text-xl font-bold tracking-wider">Starting Server...</p>
+          <p className="text-sm text-stone-400 mt-2">サーバーを起動しています（最大30秒かかります）</p>
+        </div>
+      )}
 
-            {/* ★追加: Ping表示 */}
-            <span className={`text-[10px] font-mono flex items-center gap-1 ${latency < 100 ? 'text-green-500' : latency < 300 ? 'text-yellow-500' : 'text-red-500'}`} title="サーバー応答速度">
-               📡 {latency}ms
-            </span>
-            <button 
-              onClick={copyRoomLink} 
-              className="bg-stone-700 hover:bg-stone-600 text-stone-300 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 transition-colors border border-stone-600"
-              title="この部屋の招待URLをコピー"
-            >
-              <span>🔗</span> 招待
-            </button>
-            {isAnalysisRoom && <span className="bg-indigo-900 text-indigo-200 text-[10px] px-1 rounded border border-indigo-700">検討室</span>}
+      <div className="flex flex-col items-center w-full max-w-lg shrink-0">
+        
+        {/* ★修正: ヘッダーをシンプルに (スマホで見やすく) */}
+        <div className="w-full max-w-lg flex justify-between items-center px-1 mb-2 mt-1">
+          <div className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2 shadow-sm ${gameStatus === 'playing' ? 'bg-green-900/80 text-green-100 border-green-700' : gameStatus === 'waiting' ? 'bg-blue-900/80 text-blue-100 border-blue-700' : 'bg-stone-800 text-stone-300 border-stone-600'}`}>
+             <span className={`w-2 h-2 rounded-full ${gameStatus === 'playing' ? 'bg-green-400 animate-pulse' : 'bg-stone-500'}`}></span>
+             {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
           </div>
 
-          <div className="text-xs text-stone-500 font-mono flex gap-2"><span title="部屋人数">👤 {userCounts.room}人 <span className="text-stone-600">(観戦 {Math.max(0, userCounts.room - 2)})</span></span></div>
-          <div className={`px-3 py-1 rounded text-xs font-bold border ${gameStatus === 'playing' ? 'bg-green-900 text-green-100 border-green-700' : gameStatus === 'waiting' ? 'bg-blue-900 text-blue-100 border-blue-700' : 'bg-stone-700 text-stone-300 border-stone-600'}`}>{gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}</div>
+          <div className="flex items-center gap-3">
+             {isAnalysisRoom && <span className="bg-indigo-900/80 text-indigo-200 text-[10px] px-2 py-1 rounded border border-indigo-700">検討室</span>}
+             {/* ★Pingをテキスト表示に変更 */}
+             <div className="text-[10px] font-mono text-stone-500 flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full ${latency < 100 ? 'bg-green-500' : latency < 300 ? 'bg-yellow-500' : 'bg-red-500'}`}></span>
+                Ping: {latency}ms
+             </div>
+          </div>
         </div>
 
         <div className="w-full max-w-lg flex items-end justify-between mb-1 gap-2">
@@ -483,6 +478,20 @@ const GameRoom: React.FC = () => {
                )}
              </div>
           </div>
+
+          {/* ★修正: 部屋情報をフッター下に移動 (スマホで見切れないように) */}
+          <div className="w-full flex items-center justify-between gap-2 mt-2 p-2 bg-stone-900/50 rounded border border-stone-800 text-[10px] text-stone-500">
+             <div className="flex items-center gap-2">
+                <span>Room: <span className="font-mono text-stone-400">{roomId}</span></span>
+                <button onClick={copyRoomLink} className="bg-stone-800 hover:bg-stone-700 text-amber-500 px-2 py-1 rounded border border-stone-700 flex items-center gap-1 transition-colors">
+                  <span>🔗</span> 招待リンク
+                </button>
+             </div>
+             <div className="flex items-center gap-1">
+               <span>👤 {userCounts.room}人</span>
+             </div>
+          </div>
+
         </div>
       </div>
 
