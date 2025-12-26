@@ -1,6 +1,15 @@
 import { BoardState, Coordinates, Hand, Move, PieceType, Player, Piece } from '../types';
 import { PIECE_KANJI } from '../constants';
-import { SENTE_PROMOTION_ZONE, GOTE_PROMOTION_ZONE } from '../constants';
+
+// SFEN生成用のマップ定義
+const SFEN_MAP: { [key in PieceType]: string } = {
+  [PieceType.Pawn]: 'p', [PieceType.Lance]: 'l', [PieceType.Knight]: 'n',
+  [PieceType.Silver]: 's', [PieceType.Gold]: 'g', [PieceType.Bishop]: 'b',
+  [PieceType.Rook]: 'r', [PieceType.King]: 'k',
+  [PieceType.PromotedPawn]: '+p', [PieceType.PromotedLance]: '+l',
+  [PieceType.PromotedKnight]: '+n', [PieceType.PromotedSilver]: '+s',
+  [PieceType.Horse]: '+b', [PieceType.Dragon]: '+r'
+};
 
 // --- 初期盤面生成 ---
 export const createInitialBoard = (): BoardState => {
@@ -10,14 +19,14 @@ export const createInitialBoard = (): BoardState => {
     board[y][x] = { type, owner, isPromoted: false };
   };
 
-  // Gote
+  // Gote (後手)
   place(0, 0, PieceType.Lance, 'gote'); place(1, 0, PieceType.Knight, 'gote'); place(2, 0, PieceType.Silver, 'gote');
   place(3, 0, PieceType.Gold, 'gote'); place(4, 0, PieceType.King, 'gote'); place(5, 0, PieceType.Gold, 'gote');
   place(6, 0, PieceType.Silver, 'gote'); place(7, 0, PieceType.Knight, 'gote'); place(8, 0, PieceType.Lance, 'gote');
   place(1, 1, PieceType.Rook, 'gote'); place(7, 1, PieceType.Bishop, 'gote');
   for (let i = 0; i < 9; i++) place(i, 2, PieceType.Pawn, 'gote');
 
-  // Sente
+  // Sente (先手)
   place(0, 8, PieceType.Lance, 'sente'); place(1, 8, PieceType.Knight, 'sente'); place(2, 8, PieceType.Silver, 'sente');
   place(3, 8, PieceType.Gold, 'sente'); place(4, 8, PieceType.King, 'sente'); place(5, 8, PieceType.Gold, 'sente');
   place(6, 8, PieceType.Silver, 'sente'); place(7, 8, PieceType.Knight, 'sente'); place(8, 8, PieceType.Lance, 'sente');
@@ -290,6 +299,118 @@ export const isCheckmate = (board: BoardState, hands: {sente: Hand, gote: Hand},
   return isKingInCheck(board, turn) && !hasLegalMoves(board, hands, turn);
 };
 
+// --- SFEN生成 ---
+export const generateSFEN = (board: BoardState, turn: Player, hands: {sente: Hand, gote: Hand}): string => {
+  let sfen = "";
+  for (let y = 0; y < 9; y++) {
+    let empty = 0;
+    for (let x = 0; x < 9; x++) {
+      const p = board[y][x];
+      if (!p) {
+        empty++;
+        continue;
+      }
+      if (empty > 0) {
+        sfen += empty;
+        empty = 0;
+      }
+      let char = SFEN_MAP[p.type] || '?';
+      if (p.owner === 'sente') char = char.toUpperCase();
+      sfen += char;
+    }
+    if (empty > 0) sfen += empty;
+    if (y < 8) sfen += "/";
+  }
+  
+  sfen += ` ${turn === 'sente' ? 'b' : 'w'}`; // 手番 (b:先手, w:後手)
+
+  // 持ち駒
+  let handStr = "";
+  // 先手 (S)
+  const order = [PieceType.Rook, PieceType.Bishop, PieceType.Gold, PieceType.Silver, PieceType.Knight, PieceType.Lance, PieceType.Pawn];
+  for (const type of order) {
+    const count = hands.sente[type];
+    if (count > 0) {
+      if (count > 1) handStr += count;
+      handStr += SFEN_MAP[type].toUpperCase();
+    }
+  }
+  // 後手 (G)
+  for (const type of order) {
+    const count = hands.gote[type];
+    if (count > 0) {
+      if (count > 1) handStr += count;
+      handStr += SFEN_MAP[type];
+    }
+  }
+  
+  if (handStr === "") handStr = "-";
+  sfen += ` ${handStr}`;
+  sfen += " 1"; // 手数（簡易的に1）
+
+  return sfen;
+};
+
+// --- 入玉宣言法（27点法）関連ロジック ---
+
+const PIECE_POINTS: { [key in PieceType]?: number } = {
+  [PieceType.Pawn]: 1, [PieceType.Lance]: 1, [PieceType.Knight]: 1, [PieceType.Silver]: 1,
+  [PieceType.Gold]: 1, [PieceType.Bishop]: 5, [PieceType.Rook]: 5,
+  [PieceType.PromotedPawn]: 1, [PieceType.PromotedLance]: 1, [PieceType.PromotedKnight]: 1,
+  [PieceType.PromotedSilver]: 1, [PieceType.Horse]: 5, [PieceType.Dragon]: 5,
+  [PieceType.King]: 0
+};
+
+// 特定のプレイヤーの入玉ステータスを計算
+export const getNyugyokuState = (board: BoardState, hands: {sente: Hand, gote: Hand}, player: Player) => {
+  let score = 0;
+  let piecesInZone = 0;
+  let kingInZone = false;
+
+  // 敵陣の定義（先手なら0-2段目、後手なら6-8段目）
+  const isZone = (y: number) => player === 'sente' ? (y <= 2) : (y >= 6);
+
+  // 1. 盤上の駒計算
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 9; x++) {
+      const p = board[y][x];
+      if (p && p.owner === player) {
+        if (p.type === PieceType.King) {
+          if (isZone(y)) kingInZone = true;
+        } else {
+          // ★修正: 敵陣にある場合のみカウント＆加点
+          if (isZone(y)) {
+            score += PIECE_POINTS[p.type] || 0;
+            piecesInZone++;
+          }
+        }
+      }
+    }
+  }
+
+  // 2. 持ち駒の点数加算（枚数には含めない）
+  const hand = hands[player];
+  for (const type of Object.keys(hand) as PieceType[]) {
+    const count = hand[type];
+    if (count > 0) {
+      score += count * (PIECE_POINTS[type] || 0);
+    }
+  }
+
+  // 3. 条件判定
+  // 条件: 玉が敵陣、点数が規定以上(先手28/後手27)、敵陣の駒が10枚以上
+  const requiredScore = player === 'sente' ? 28 : 27;
+  const canDeclare = kingInZone && piecesInZone >= 10 && score >= requiredScore;
+
+  return {
+    score,
+    piecesInZone,
+    kingInZone,
+    canDeclare,
+    requiredScore // 表示用に目標点も返す
+  };
+};
+
 
 // --- KIF出力用フォーマット関数 ---
 
@@ -445,6 +566,3 @@ export const exportKIF = (
 
   return `${header}\n${body}${resultStr}\n`;
 };
-
-// SFEN生成関数も必要ならここに含めますが、元のファイルにはありませんでした。
-// 必要であれば shogistack-server 側の generateSFEN をここにコピーしてください。

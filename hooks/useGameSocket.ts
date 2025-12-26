@@ -46,11 +46,11 @@ export const useGameSocket = (
   const [userCounts, setUserCounts] = useState<{global: number, room: number}>({ global: 0, room: 0 });
   const [connectionStatus, setConnectionStatus] = useState<{sente: boolean, gote: boolean}>({sente: false, gote: false});
   
-  // ★追加: 接続状態とPing値
+  // 接続状態とPing値
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [latency, setLatency] = useState<number>(0);
   
-  // ★追加: 終局理由
+  // 終局理由
   const [gameEndReason, setGameEndReason] = useState<string | null>(null);
 
   // UI制御のためのRefやコールバック用
@@ -63,12 +63,11 @@ export const useGameSocket = (
 
     const pingInterval = setInterval(() => {
       const start = Date.now();
-      // volatile: ネットワークが詰まっている時は無理に送らない（ラグの原因を作らない）
       socket.volatile.emit("ping_latency", () => {
         const ms = Date.now() - start;
         setLatency(ms);
       });
-    }, 2000); // 2秒ごとに計測
+    }, 2000); 
 
     return () => clearInterval(pingInterval);
   }, [joined]);
@@ -101,7 +100,6 @@ export const useGameSocket = (
     socket.on("update_global_count", (count: number) => setUserCounts(prev => ({ ...prev, global: count })));
 
     if (joined) {
-      // 既に接続済みの場合もjoinを送る（再レンダリング時など）
       if (socket.connected) {
          handleConnect();
       }
@@ -160,6 +158,7 @@ export const useGameSocket = (
         setWinner(data.winner);
         setGameEndReason(data.reason || null);
         playSound('timeout');
+        
         let msg = "終局！";
         if (data.reason === 'illegal_sennichite') {
            msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (連続王手の千日手)`;
@@ -167,6 +166,12 @@ export const useGameSocket = (
            msg += " 千日手が成立しました（引き分け）";
         } else if (data.reason === 'timeout') {
            msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (時間切れ)`;
+        } else if (data.reason === 'try') {
+           msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の入玉宣言勝ち`;
+        } else if (data.reason === 'checkmate') {
+           msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (詰み)`;
+        } else if (data.reason === 'illegal_declaration') {
+           msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち (相手の反則宣言)`;
         } else {
            msg += ` ${data.winner === 'sente' ? '先手' : '後手'}の勝ち`;
         }
@@ -207,7 +212,6 @@ export const useGameSocket = (
       });
     }
 
-    // エラー監視用
     socket.on("connect_error", (err) => {
         setIsConnected(false);
         console.error("Socket接続エラー:", err.message);
@@ -284,12 +288,18 @@ export const useGameSocket = (
     socket.emit("send_message", { roomId, message: text, role: myRole, userName, userId });
   }, [roomId, myRole, userName, userId]);
 
+  // ★追加: 入玉宣言
+  const declareWin = useCallback(() => {
+    if (myRole === 'sente' || myRole === 'gote') {
+        socket.emit("declare_win", { roomId, player: myRole });
+    }
+  }, [roomId, myRole]);
+
   const setIsLocalMode = (val: boolean) => {
       isLocalModeRef.current = val;
   };
 
   return {
-    // State
     gameStatus,
     history,
     setHistory,
@@ -307,7 +317,6 @@ export const useGameSocket = (
     userCounts,
     connectionStatus,
     
-    // ★追加・返却
     isConnected,
     latency,
     
@@ -315,7 +324,6 @@ export const useGameSocket = (
     isLocalModeRef,     
     gameEndReason,
 
-    // Actions
     updateSettings,
     toggleReady,
     resignGame,
@@ -325,6 +333,7 @@ export const useGameSocket = (
     requestReset,
     requestRematch,
     sendMessage,
+    declareWin, // ★追加して返す
     setIsLocalMode
   };
 };

@@ -4,7 +4,7 @@ import ShogiBoard from '../components/ShogiBoard';
 import Komadai from '../components/Komadai';
 import Chat from '../components/Chat';
 import { BoardState, Coordinates, Hand, Move, PieceType, Player } from '../types';
-import { createInitialBoard, isValidMove, applyMove, exportKIF } from '../utils/shogiUtils';
+import { createInitialBoard, isValidMove, applyMove, exportKIF, getNyugyokuState, isKingInCheck } from '../utils/shogiUtils';
 import { playSound } from '../utils/soundUtils';
 import { getPromotionStatus } from '../utils/promotionUtils';
 import { useGameSocket } from '../hooks/useGameSocket';
@@ -56,12 +56,14 @@ const GameRoom: React.FC = () => {
   const [promotionCandidate, setPromotionCandidate] = useState<{ move: Move } | null>(null);
   const [isLocalMode, setIsLocalModeState] = useState(false);
   const lastSoundTime = useRef<number | null>(null);
+  const [showNyugyokuModal, setShowNyugyokuModal] = useState(false);
 
   const {
     gameStatus, history, setHistory, myRole, playerNames, winner, readyStatus, rematchRequests,
     settings, times, setTimes, byoyomi, setByoyomi, chatMessages, userCounts, connectionStatus,
     lastServerTimeData, gameEndReason, isConnected, latency,
-    updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestReset, requestRematch, sendMessage, setIsLocalMode
+    updateSettings, toggleReady, resignGame, sendMove, requestUndo, requestReset, requestRematch, sendMessage, setIsLocalMode,
+    declareWin
   } = useGameSocket(roomId, userId, userName, isAnalysisRoom, isNameDecided);
 
   const { processMove } = useMoveLogic({
@@ -173,6 +175,19 @@ const GameRoom: React.FC = () => {
     }
   }, [times, byoyomi, gameStatus, displayTurn]);
 
+  // 入玉ステータス計算
+  const senteState = getNyugyokuState(displayBoard, displayHands, 'sente');
+  const goteState = getNyugyokuState(displayBoard, displayHands, 'gote');
+  const myState = myRole === 'sente' ? senteState : myRole === 'gote' ? goteState : null;
+  const isMyTurn = (myRole === displayTurn);
+  
+  let amInCheck = false;
+  if (myRole === 'sente' || myRole === 'gote') {
+      try {
+          if (displayBoard) amInCheck = isKingInCheck(displayBoard, myRole);
+      } catch(e) {}
+  }
+
   const toggleLocalModeWrapper = () => {
     if (isLocalMode) {
       if (window.confirm("ローカル検討を終了し、最新の同期局面に戻りますか？")) {
@@ -199,6 +214,13 @@ const GameRoom: React.FC = () => {
     });
   };
 
+  const handleDeclareWin = () => {
+    if (window.confirm("入玉宣言しますか？\n※条件を満たしていない場合は反則負けになります。")) {
+      declareWin();
+      setShowNyugyokuModal(false);
+    }
+  };
+
   const handleSquareClick = (coords: Coordinates) => {
     if (gameStatus === 'waiting' && !isAnalysisRoom) return;
     const clickedPiece = displayBoard[coords.y][coords.x];
@@ -215,7 +237,6 @@ const GameRoom: React.FC = () => {
       const baseMove: Move = { 
         from: selectedSquare, to: coords, piece: piece.type, drop: false, isPromoted: false 
       };
-      // ★修正: 引数に displayHands を追加
       if (!isValidMove(displayBoard, displayHands, displayTurn, baseMove)) return; 
 
       if (status === 'must') {
@@ -237,7 +258,6 @@ const GameRoom: React.FC = () => {
         const move: Move = { 
           from: 'hand', to: coords, piece: selectedHandPiece, drop: true, isPromoted: false 
         };
-        // ★修正: 引数に displayHands を追加
         if (isValidMove(displayBoard, displayHands, displayTurn, move)) {
           processMove(move);
         }
@@ -353,7 +373,6 @@ const GameRoom: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-stone-950 flex flex-col lg:flex-row items-center justify-start lg:justify-center p-2 gap-4 relative">
-      
       {!isConnected && (
         <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-start pt-40 text-white backdrop-blur-sm animate-in fade-in duration-300">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-amber-500 mb-4"></div>
@@ -368,13 +387,11 @@ const GameRoom: React.FC = () => {
       )}
 
       <div className="flex flex-col items-center w-full max-w-lg shrink-0">
-        
         <div className="w-full max-w-lg flex justify-between items-center px-1 mb-2 mt-1">
           <div className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2 shadow-sm ${gameStatus === 'playing' ? 'bg-green-900/80 text-green-100 border-green-700' : gameStatus === 'waiting' ? 'bg-blue-900/80 text-blue-100 border-blue-700' : 'bg-stone-800 text-stone-300 border-stone-600'}`}>
              <span className={`w-2 h-2 rounded-full ${gameStatus === 'playing' ? 'bg-green-400 animate-pulse' : 'bg-stone-500'}`}></span>
              {gameStatus === 'playing' ? "対局中" : gameStatus === 'waiting' ? "対局待ち" : gameStatus === 'analysis' ? "検討中" : "感想戦"}
           </div>
-
           <div className="flex items-center gap-3">
              {isAnalysisRoom && <span className="bg-indigo-900/80 text-indigo-200 text-[10px] px-2 py-1 rounded border border-indigo-700">検討室</span>}
              <div className="text-[10px] font-mono text-stone-500 flex items-center gap-1">
@@ -457,8 +474,15 @@ const GameRoom: React.FC = () => {
                <button onClick={handleExit} className="text-stone-500 hover:text-red-400 text-xs underline">← 退出</button>
                <button onClick={copyKIF} className="text-stone-500 hover:text-white text-xs underline">KIFコピー</button>
              </div>
-             
              <div className="flex gap-2">
+               {gameStatus === 'playing' && (
+                 <button 
+                   onClick={() => setShowNyugyokuModal(true)} 
+                   className="bg-indigo-800 text-indigo-100 border border-indigo-600 px-3 py-1 rounded text-xs hover:bg-indigo-700 whitespace-nowrap"
+                 >
+                   入玉判定
+                 </button>
+               )}
                {gameStatus === 'playing' && (myRole === 'sente' || myRole === 'gote') && (
                   <button onClick={() => resignGame(myRole)} className="bg-stone-800 text-stone-400 border border-stone-600 px-4 py-2 rounded text-xs hover:bg-stone-700 hover:text-white">投了する</button>
                )}
@@ -489,13 +513,71 @@ const GameRoom: React.FC = () => {
                <span>👤 {userCounts.room}人</span>
              </div>
           </div>
-
         </div>
       </div>
 
       <div className="w-full max-w-lg lg:max-w-xs h-[400px] lg:h-[600px] shrink-0">
         <Chat messages={chatMessages} onSendMessage={sendMessage} myRole={myRole} userId={userId} />
       </div>
+
+      {showNyugyokuModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setShowNyugyokuModal(false)}>
+          <div className="bg-stone-900 border border-stone-600 p-6 rounded-xl shadow-2xl max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <h3 className="text-xl text-stone-200 font-bold mb-4 text-center border-b border-stone-700 pb-2">入玉宣言条件確認</h3>
+            <table className="w-full text-sm text-stone-300 mb-6">
+              <thead>
+                <tr className="border-b border-stone-700 text-stone-500">
+                  <th className="py-2 text-left">条件</th>
+                  <th className="py-2 text-center text-black bg-stone-300 rounded-t">☗ 先手</th>
+                  <th className="py-2 text-center text-black bg-stone-300 rounded-t border-l border-stone-400">☖ 後手</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-800">
+                <tr>
+                  <td className="py-3">玉が敵陣3段目以内</td>
+                  <td className="text-center font-mono">{senteState.kingInZone ? "〇" : "×"}</td>
+                  <td className="text-center font-mono">{goteState.kingInZone ? "〇" : "×"}</td>
+                </tr>
+                <tr>
+                  <td className="py-3">敵陣の駒10枚以上<br/><span className="text-[10px] text-stone-500">(玉を除く)</span></td>
+                  <td className={`text-center font-mono font-bold ${senteState.piecesInZone >= 10 ? 'text-green-400' : 'text-stone-500'}`}>{senteState.piecesInZone}枚</td>
+                  <td className={`text-center font-mono font-bold ${goteState.piecesInZone >= 10 ? 'text-green-400' : 'text-stone-500'}`}>{goteState.piecesInZone}枚</td>
+                </tr>
+                <tr>
+                  <td className="py-3">点数 (持駒+敵陣駒)<br/><span className="text-[10px] text-stone-500">(大駒5/小駒1, 玉除く)</span></td>
+                  <td className={`text-center font-mono font-bold ${senteState.score >= 28 ? 'text-green-400' : 'text-stone-500'}`}>{senteState.score} / 28点</td>
+                  <td className={`text-center font-mono font-bold ${goteState.score >= 27 ? 'text-green-400' : 'text-stone-500'}`}>{goteState.score} / 27点</td>
+                </tr>
+              </tbody>
+            </table>
+
+            {myState && (
+              <div className="mt-6">
+                {/* ★修正: ボタンをスッキリ化 */}
+                <button 
+                  onClick={handleDeclareWin}
+                  disabled={!(myState.canDeclare && isMyTurn && !amInCheck)}
+                  className={`w-full py-3 rounded font-bold text-lg shadow-lg transition-all border ${
+                    myState.canDeclare && isMyTurn && !amInCheck 
+                      ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.5)] animate-pulse cursor-pointer' 
+                      : 'bg-stone-800 text-stone-500 border-stone-700 cursor-not-allowed'
+                  }`}
+                >
+                  {myState.canDeclare && isMyTurn && !amInCheck 
+                    ? "宣言して勝つ" 
+                    : !isMyTurn ? "手番ではありません" 
+                    : amInCheck ? "王手されています" 
+                    : "宣言条件未達"}
+                </button>
+              </div>
+            )}
+            
+            <button onClick={() => setShowNyugyokuModal(false)} className="mt-4 w-full text-stone-500 text-xs hover:text-stone-300 underline">
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
