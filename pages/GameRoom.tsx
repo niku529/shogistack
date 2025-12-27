@@ -9,6 +9,9 @@ import { playSound } from '../utils/soundUtils';
 import { getPromotionStatus } from '../utils/promotionUtils';
 import { useGameSocket } from '../hooks/useGameSocket';
 import { useMoveLogic } from '../hooks/useMoveLogic';
+// ★追加: Firebase Auth関連をインポート
+import { auth } from '../firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
 const EMPTY_HAND = {
   [PieceType.Pawn]: 0, [PieceType.Lance]: 0, [PieceType.Knight]: 0, [PieceType.Silver]: 0,
@@ -43,6 +46,36 @@ const GameRoom: React.FC = () => {
     }
   }, [urlName, roomId, isAnalysisRoom, navigate]);
 
+  // ★追加: ログイン状態を監視し、会員なら自動で名前とIDを設定して入力画面をスキップ
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // ログイン済みの場合
+        // 名前はメールアドレスの@より前を使用（Lobbyと同じロジック）
+        const name = user.displayName || user.email?.split('@')[0] || "Member";
+        setUserName(name);
+        setUserId(user.uid); // IDをFirebaseのUIDで上書き
+        setIsNameDecided(true); // 名前決定フラグをONにしてフォームをスキップ
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 未ログイン（ゲスト）用のID生成
+  useEffect(() => {
+    // すでにAuthでIDがセットされている場合は上書きしないようにチェックを入れても良いが、
+    // Authチェックは非同期で後から来るため、とりあえず初期値として入れておく形でも動作はする。
+    // ここでは「まだIDがない場合」のみ生成するようにする。
+    if (!userId) { 
+        let storedId = localStorage.getItem('shogi_user_id');
+        if (!storedId) {
+        storedId = Math.random().toString(36).substring(2) + Date.now().toString(36);
+        localStorage.setItem('shogi_user_id', storedId);
+        }
+        setUserId(storedId);
+    }
+  }, [userId]);
+
   const [isFlipped, setIsFlipped] = useState(false);
   const [displayBoard, setDisplayBoard] = useState<BoardState>(createInitialBoard());
   const [displayHands, setDisplayHands] = useState<{ sente: Hand; gote: Hand }>({
@@ -69,15 +102,6 @@ const GameRoom: React.FC = () => {
   const { processMove } = useMoveLogic({
     gameStatus, myRole, displayTurn, viewIndex, history, isLocalMode, sendMove, setHistory, setViewIndex,
   });
-
-  useEffect(() => {
-    let storedId = localStorage.getItem('shogi_user_id');
-    if (!storedId) {
-      storedId = Math.random().toString(36).substring(2) + Date.now().toString(36);
-      localStorage.setItem('shogi_user_id', storedId);
-    }
-    setUserId(storedId);
-  }, []);
 
   const handleDirectJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -338,6 +362,7 @@ const GameRoom: React.FC = () => {
     );
   };
 
+  // ★名前未決定の場合のみ入力フォームを表示
   if (!isNameDecided) {
     return (
       <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
@@ -553,7 +578,6 @@ const GameRoom: React.FC = () => {
 
             {myState && (
               <div className="mt-6">
-                {/* ★修正: ボタンをスッキリ化 */}
                 <button 
                   onClick={handleDeclareWin}
                   disabled={!(myState.canDeclare && isMyTurn && !amInCheck)}
