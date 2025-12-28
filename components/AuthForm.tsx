@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { auth, db } from '../firebase'; // db を追加インポート
+import { auth, db } from '../firebase';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -15,7 +15,7 @@ import {
   setDoc, 
   doc, 
   serverTimestamp 
-} from 'firebase/firestore'; // Firestore機能をインポート
+} from 'firebase/firestore';
 
 interface AuthFormProps {
   onClose: () => void;
@@ -24,10 +24,9 @@ interface AuthFormProps {
 const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
   const [isLogin, setIsLogin] = useState(true);
   
-  // 入力フォームの状態管理
-  const [loginInput, setLoginInput] = useState(""); // ログイン用（メアド or ユーザー名）
-  const [regEmail, setRegEmail] = useState("");     // 登録用メアド
-  const [regUsername, setRegUsername] = useState(""); // 登録用ユーザー名
+  const [loginInput, setLoginInput] = useState("");
+  const [regEmail, setRegEmail] = useState("");
+  const [regUsername, setRegUsername] = useState("");
   const [password, setPassword] = useState("");
   
   const [error, setError] = useState("");
@@ -40,49 +39,34 @@ const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
 
     try {
       if (isLogin) {
-        // --- ログイン処理 ---
         let emailToLogin = loginInput;
-
-        // 入力値がメールアドレス形式（@を含む）でない場合、ユーザー名とみなしてDB検索
         if (!loginInput.includes('@')) {
             const q = query(collection(db, "users"), where("username", "==", loginInput));
             const querySnapshot = await getDocs(q);
-
             if (querySnapshot.empty) {
                 throw new Error("USER_NOT_FOUND");
             }
-            // 見つかったら、そのユーザーのメールアドレスを取得してログインに使う
             emailToLogin = querySnapshot.docs[0].data().email;
         }
-
         await signInWithEmailAndPassword(auth, emailToLogin, password);
         onClose();
-
       } else {
-        // --- 新規登録処理 ---
-        // ★追加: ユーザー名の文字種チェック
-        // 半角英数字(a-z, A-Z, 0-9)、ハイフン(-)、アンダースコア(_) のみ許可
         const usernameRegex = /^[a-zA-Z0-9-_]+$/;
         if (!usernameRegex.test(regUsername)) {
             throw new Error("INVALID_USERNAME_FORMAT");
         }
         
-        // 1. ユーザー名の重複チェック
         const q = query(collection(db, "users"), where("username", "==", regUsername));
         const querySnapshot = await getDocs(q);
         if (!querySnapshot.empty) {
             throw new Error("USERNAME_TAKEN");
         }
 
-        // 2. アカウント作成
         const userCredential = await createUserWithEmailAndPassword(auth, regEmail, password);
         const user = userCredential.user;
 
-        // 3. プロフィール更新（Auth側）
         await updateProfile(user, { displayName: regUsername });
 
-        // 4. データベースにユーザー情報を保存（重要！）
-        // これがあるから次回以降「ユーザー名ログイン」ができるようになります
         await setDoc(doc(db, "users", user.uid), {
             uid: user.uid,
             username: regUsername,
@@ -90,10 +74,7 @@ const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
             createdAt: serverTimestamp()
         });
 
-        // 5. 確認メール送信
         await sendEmailVerification(user);
-
-        // 6. 一度ログアウト
         await signOut(auth);
         
         alert("認証メールを送信しました。\nメール内のリンクをクリックして登録を完了させてください。");
@@ -101,7 +82,6 @@ const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
       }
     } catch (err: any) {
       console.error(err);
-      // エラーメッセージの分岐
       if (err.message === "USER_NOT_FOUND") {
           setError("ユーザーが見つかりませんでした。");
       } else if (err.message === "USERNAME_TAKEN") {
@@ -120,7 +100,6 @@ const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
     }
   };
 
-  // モード切替時にフォームをクリア
   const toggleMode = () => {
       setIsLogin(!isLogin);
       setError("");
@@ -144,47 +123,57 @@ const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
         <form onSubmit={handleSubmit} className="space-y-4">
           
           {isLogin ? (
-            /* ログイン時: メアド or ユーザー名 */
             <div>
-                <label className="block text-stone-400 text-xs mb-1">メールアドレス または ユーザー名</label>
+                {/* ★修正: idとhtmlForを追加 */}
+                <label htmlFor="loginId" className="block text-stone-400 text-xs mb-1">メールアドレス または ユーザー名</label>
                 <input 
-                type="text" 
-                value={loginInput}
-                onChange={(e) => setLoginInput(e.target.value)}
-                className="w-full bg-stone-900 border border-stone-600 rounded p-2 text-white focus:border-amber-500 outline-none"
-                required
+                  id="loginId"
+                  name="loginId"
+                  type="text" 
+                  value={loginInput}
+                  onChange={(e) => setLoginInput(e.target.value)}
+                  className="w-full bg-stone-900 border border-stone-600 rounded p-2 text-white focus:border-amber-500 outline-none"
+                  required
                 />
             </div>
           ) : (
-            /* 登録時: ユーザー名とメアドを別々に入力 */
             <>
                 <div>
-                    <label className="block text-stone-400 text-xs mb-1">ユーザー名 <span className="text-[10px] text-stone-500">(対局名・ログインIDになります)</span></label>
+                    {/* ★修正: idとhtmlForを追加 */}
+                    <label htmlFor="regUsername" className="block text-stone-400 text-xs mb-1">ユーザー名 <span className="text-[10px] text-stone-500">(対局名・ログインIDになります)</span></label>
                     <input 
-                    type="text" 
-                    value={regUsername}
-                    onChange={(e) => setRegUsername(e.target.value)}
-                    className="w-full bg-stone-900 border border-stone-600 rounded p-2 text-white focus:border-amber-500 outline-none"
-                    placeholder="例: shogi_taro"
-                    required
+                      id="regUsername"
+                      name="username"
+                      type="text" 
+                      value={regUsername}
+                      onChange={(e) => setRegUsername(e.target.value)}
+                      className="w-full bg-stone-900 border border-stone-600 rounded p-2 text-white focus:border-amber-500 outline-none"
+                      placeholder="例: shogi_taro"
+                      required
                     />
                 </div>
                 <div>
-                    <label className="block text-stone-400 text-xs mb-1">メールアドレス</label>
+                    {/* ★修正: idとhtmlForを追加 */}
+                    <label htmlFor="regEmail" className="block text-stone-400 text-xs mb-1">メールアドレス</label>
                     <input 
-                    type="email" 
-                    value={regEmail}
-                    onChange={(e) => setRegEmail(e.target.value)}
-                    className="w-full bg-stone-900 border border-stone-600 rounded p-2 text-white focus:border-amber-500 outline-none"
-                    required
+                      id="regEmail"
+                      name="email"
+                      type="email" 
+                      value={regEmail}
+                      onChange={(e) => setRegEmail(e.target.value)}
+                      className="w-full bg-stone-900 border border-stone-600 rounded p-2 text-white focus:border-amber-500 outline-none"
+                      required
                     />
                 </div>
             </>
           )}
 
           <div>
-            <label className="block text-stone-400 text-xs mb-1">パスワード</label>
+            {/* ★修正: idとhtmlForを追加 */}
+            <label htmlFor="password" className="block text-stone-400 text-xs mb-1">パスワード</label>
             <input 
+              id="password"
+              name="password"
               type="password" 
               value={password}
               onChange={(e) => setPassword(e.target.value)}

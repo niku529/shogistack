@@ -364,17 +364,38 @@ const Lobby: React.FC = () => {
             <form onSubmit={handleGuestJoin} className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div className="text-center mb-6"><p className="text-stone-400 text-xs">会員登録なしで、友達とURLを共有して遊べます。</p></div>
               <div>
-                <label className="block text-stone-400 text-xs mb-1">ユーザー名</label>
-                <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-3 text-white focus:border-amber-500 outline-none" placeholder="あなたの名前" required />
+                {/* ★修正: htmlForとid/nameを追加 */}
+                <label htmlFor="guestName" className="block text-stone-400 text-xs mb-1">ユーザー名</label>
+                <input 
+                  id="guestName"
+                  name="guestName"
+                  type="text" 
+                  value={userName} 
+                  onChange={(e) => setUserName(e.target.value)} 
+                  className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-3 text-white focus:border-amber-500 outline-none" 
+                  placeholder="あなたの名前" 
+                  required 
+                />
               </div>
               <div>
-                <label className="block text-stone-400 text-xs mb-1">ルームID (合言葉)</label>
+                {/* ★修正: htmlForとid/nameを追加 */}
+                <label htmlFor="roomId" className="block text-stone-400 text-xs mb-1">ルームID (合言葉)</label>
                 <div className="flex gap-2">
-                    <input type="text" value={roomId} onChange={(e) => setRoomId(e.target.value)} className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-3 text-white focus:border-amber-500 outline-none font-mono" placeholder="shogi-room" required />
+                    <input 
+                      id="roomId"
+                      name="roomId"
+                      type="text" 
+                      value={roomId} 
+                      onChange={(e) => setRoomId(e.target.value)} 
+                      className="w-full bg-stone-900 border border-stone-600 rounded px-3 py-3 text-white focus:border-amber-500 outline-none font-mono" 
+                      placeholder="shogi-room" 
+                      required 
+                    />
                     <button type="button" onClick={createRandomRoom} className="bg-stone-700 text-stone-300 px-3 rounded hover:bg-stone-600 text-xs whitespace-nowrap">自動</button>
                 </div>
               </div>
               <div className="flex items-center gap-3 p-3 bg-stone-900/50 rounded border border-stone-700">
+                 {/* ここは既にOK */}
                  <input type="checkbox" id="analysisMode" checked={isAnalysis} onChange={(e) => setIsAnalysis(e.target.checked)} className="w-4 h-4 accent-amber-600 cursor-pointer" />
                  <label htmlFor="analysisMode" className="text-stone-300 text-xs cursor-pointer select-none">検討モード (一人用)</label>
               </div>
